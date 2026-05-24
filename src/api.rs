@@ -202,7 +202,7 @@ async fn regionmates(
 
     let mut result = vec![];
     for name in members {
-        let endorsements = grouped.get(&region).cloned().unwrap_or_default();
+        let endorsements = grouped.get(&name).cloned().unwrap_or_default();
 
         result.push(RegionMember {
             name, endorsements
