@@ -22,8 +22,8 @@ async fn execute_event(
 ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     match event.category.as_str() {
         "wadmit" => handle_admit(tx, cache, event).await,
-        "wresign" => handle_resign(tx, cache, event).await,
-        "wkick" | "ncte" => handle_cte(tx, cache, event).await,
+        "wresign" | "wkick" => handle_resign(tx, cache, event).await,
+        "ncte" => handle_cte(tx, cache, event).await,
         "wendo" => handle_endo(tx, event).await,
         "wunendo" => handle_remove_endo(tx, event).await,
         "move" => handle_move(tx, cache, event).await,
