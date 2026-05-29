@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, extract::{Path, State}, http::StatusCode, routing::{get, post}};
-use sqlx::PgPool;
-use tokio::sync::{mpsc, broadcast};
+use tokio::sync::{RwLock, broadcast, mpsc};
 
-use crate::{command::Command, query::{Delegate, Nation, Region, query_delegates, query_members, query_nation, query_region, query_regionmates}, sse::RegionEvent};
+use crate::{command::Command, data::DataStorage, query::{Nation, Region, query_members, query_nation, query_region, query_regionmates}, sse::RegionEvent};
 use crate::sse::start_stream;
 
 #[derive(Clone)]
 pub struct ApiState {
-    pub pool: PgPool,
+    pub data: Arc<RwLock<DataStorage>>,
     pub sender: mpsc::Sender<Command>,
     pub broadcast: Arc<broadcast::Sender<RegionEvent>>,
 }
@@ -17,20 +16,19 @@ pub struct ApiState {
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 pub async fn run_api_server(
-    pool: PgPool,
+    data: Arc<RwLock<DataStorage>>,
     sender: mpsc::Sender<Command>,
     broadcast: broadcast::Sender<RegionEvent>
 ) -> Result<(), std::io::Error> {
     let app = Router::new()
         .route("/members", get(world_members))
         .route("/members/{name}", get(region_members))
-        .route("/delegates", get(delegates))
         .route("/region/{name}", get(region))
         .route("/regionmates/{name}", get(regionmates))
         .route("/nation/{name}", get(nation))
         .route("/sse/{events}/{view}", get(start_stream))
         .route("/bootstrap", post(bootstrap))
-        .with_state(ApiState { pool, sender, broadcast: Arc::new(broadcast) });
+        .with_state(ApiState { data, sender, broadcast: Arc::new(broadcast) });
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:16636")
         .await
@@ -44,7 +42,7 @@ pub async fn run_api_server(
 async fn world_members(
     State(state): State<ApiState>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let members = query_members(&state.pool, None).await.map_err(|err| {
+    let members = query_members(state.data, None).await.map_err(|err| {
         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
 
@@ -55,28 +53,18 @@ async fn region_members(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let members = query_members(&state.pool, Some(&name)).await.map_err(|err| {
+    let members = query_members(state.data, Some(&name)).await.map_err(|err| {
         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
     })?;
 
     Ok(Json(members))
 }
 
-async fn delegates(
-    State(state): State<ApiState>,
-) -> ApiResult<Json<Vec<Delegate>>> {
-    let delegates = query_delegates(&state.pool).await.map_err(|err| {
-        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
-    })?;
-
-    Ok(Json(delegates))
-}
-
 async fn region(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Region>> {
-    let region = query_region(&state.pool, &name).await.map_err(|err| {
+    let region = query_region(state.data, &name).await.map_err(|err| {
         (StatusCode::NOT_FOUND, err.to_string())
     })?;
 
@@ -87,7 +75,7 @@ async fn regionmates(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Region>> {
-    let region = query_regionmates(&state.pool, &name).await.map_err(|err| {
+    let region = query_regionmates(state.data, &name).await.map_err(|err| {
         (StatusCode::NOT_FOUND, err.to_string())
     })?;
 
@@ -98,7 +86,7 @@ async fn nation(
     State(state): State<ApiState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<Nation>> {
-    let nation = query_nation(&state.pool, &name).await.map_err(|err| {
+    let nation = query_nation(state.data, &name).await.map_err(|err| {
         (StatusCode::NOT_FOUND, err.to_string())
     })?;
 

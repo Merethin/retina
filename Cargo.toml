@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.102"
 async-stream = "0.3.6"
 axum = { version = "0.8.9", features = [ "macros" ] }
 caramel = { path = "./caramel", features = [ "log", "ns", "akari" ] }
@@ -15,4 +16,5 @@ log = { version = "0.4.29", features = [ "max_level_debug", "release_max_level_i
 serde = "1.0.228"
 serde_json = "1.0.150"
 sqlx = { version = "0.8.6", features = [ "postgres", "runtime-tokio" ] }
+string-interner = "0.20.0"
 tokio = { version = "1.52.3", features = [ "full" ] }

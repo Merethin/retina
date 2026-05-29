@@ -1,220 +1,290 @@
-use std::error::Error;
+use std::sync::Arc;
 use caramel::types::akari::Event;
-use sqlx::PgTransaction;
-
-use crate::cache::EntityCache;
+use tokio::sync::RwLock;
+use crate::data::{DataStorage, NationData};
 
 pub async fn handle_admit(
-    tx: &mut PgTransaction<'_>,
-    cache: &mut EntityCache,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.actor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.actor.as_ref().unwrap());
 
-    sqlx::query(
-        "INSERT INTO retina_nations (name, region) 
-        VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET
-        region = EXCLUDED.region"
-    ).bind(name)
-    .bind(region)
-    .execute(&mut **tx)
-    .await?;
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"))
+    };
 
-    sqlx::query(
-        "DELETE FROM retina_endorsements WHERE target = $1"
-    ).bind(name)
-    .execute(&mut **tx)
-    .await?;
-
-    cache.add_region(&region);
-    cache.add_nation(&name);
+    nation.is_wa = true;
+    w.wa_nations.push(name);
 
     Ok(true)
 }
 
 pub async fn handle_resign(
-    tx: &mut PgTransaction<'_>,
-    cache: &mut EntityCache,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.actor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.actor.as_ref().unwrap());
+    
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"))
+    };
 
-    sqlx::query(
-        "DELETE FROM retina_nations WHERE name = $1"
-    ).bind(name)
-    .execute(&mut **tx)
-    .await?;
+    nation.is_wa = false;
+    let delegacy = std::mem::replace(&mut nation.delegate, None);
 
-    sqlx::query(
-        "DELETE FROM retina_endorsements WHERE target = $1"
-    ).bind(name)
-    .execute(&mut **tx)
-    .await?;
+    if let Some(delegacy) = delegacy {
+        w.delegates.remove(&delegacy);
+    }
 
-    cache.remove_region(&region);
-    cache.remove_nation(&name);
+    w.wa_nations.retain(|v| *v != name);
+    w.endorsements.get_mut(&name).map(|value| {
+        value.clear();
+    });
+
+    Ok(true)
+}
+
+pub async fn handle_found(
+    data: Arc<RwLock<DataStorage>>,
+    event: &Event
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.actor.as_ref().unwrap());
+    let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+
+    w.nations.insert(name, NationData {
+        name,
+        region,
+        is_wa: false,
+        delegate: None,
+        lastupdate: 0
+    });
+
+    w.regions.entry(region).or_default().push(name);
 
     Ok(true)
 }
 
 pub async fn handle_cte(
-    tx: &mut PgTransaction<'_>,
-    cache: &mut EntityCache,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.receptor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
 
-    if !cache.check_nation(&name) {
-        return Ok(false);
+    let Some(nation) = w.nations.remove(&name) else {
+        return Err(anyhow::Error::msg("Not found"))
+    };
+
+    if nation.is_wa {
+        w.wa_nations.retain(|v| *v != name);
     }
 
-    sqlx::query(
-        "DELETE FROM retina_nations WHERE name = $1"
-    ).bind(name)
-    .execute(&mut **tx)
-    .await?;
+    if let Some(delegate) = nation.delegate {
+        w.delegates.remove(&delegate);
+    }
 
-    sqlx::query(
-        "DELETE FROM retina_endorsements WHERE target = $1"
-    ).bind(name)
-    .execute(&mut **tx)
-    .await?;
+    if let Some(region) = w.regions.get_mut(&nation.region) {
+        region.retain(|v| *v != name);
+    }
 
-    cache.remove_region(&region);
-    cache.remove_nation(&name);
+    w.endorsements.get_mut(&name).map(|value| {
+        value.clear();
+    });
 
     Ok(true)
 }
 
 pub async fn handle_endo(
-    tx: &mut PgTransaction<'_>,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let endorser = event.actor.as_ref().unwrap();
-    let target = event.receptor.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let endorser = w.interner.get_or_intern(event.actor.as_ref().unwrap());
+    let target = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
 
-    sqlx::query(
-        "INSERT INTO retina_endorsements (endorser, target) VALUES ($1, $2) ON CONFLICT DO NOTHING"
-    ).bind(endorser)
-    .bind(target)
-    .execute(&mut **tx)
-    .await?;
+    w.endorsements.entry(target).or_default().push(endorser);
+
 
     Ok(true)
 }
 
 pub async fn handle_remove_endo(
-    tx: &mut PgTransaction<'_>,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let endorser = event.actor.as_ref().unwrap();
-    let target = event.receptor.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let endorser = w.interner.get_or_intern(event.actor.as_ref().unwrap());
+    let target = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
 
-    sqlx::query(
-        "DELETE FROM retina_endorsements WHERE endorser = $1 AND target = $2"
-    ).bind(endorser)
-    .bind(target)
-    .execute(&mut **tx)
-    .await?;
+    if let Some(set) = w.endorsements.get_mut(&target) {
+        set.retain(|v| *v != endorser);
+    }
 
     Ok(true)
 }
 
 pub async fn handle_move(
-    tx: &mut PgTransaction<'_>,
-    cache: &mut EntityCache,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.actor.as_ref().unwrap();
-    let origin = event.origin.as_ref().unwrap();
-    let region = event.destination.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.actor.as_ref().unwrap());
+    let origin = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+    let dest = w.interner.get_or_intern(event.destination.as_ref().unwrap());
 
-    if !cache.check_nation(&name) {
-        return Ok(false);
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"));
+    };
+    
+    nation.region = dest;
+
+    if let Some(set) = w.regions.get_mut(&origin) {
+        set.retain(|v| *v != name);
     }
 
-    sqlx::query(
-        "UPDATE retina_nations SET region = $2 WHERE name = $1"
-    ).bind(name)
-    .bind(region)
-    .execute(&mut **tx)
-    .await?;
-
-    cache.remove_region(&origin);
-    cache.add_region(&region);
+    w.regions.entry(dest).or_default().push(name);
 
     Ok(true)
 }
 
 pub async fn handle_update(
-    tx: &mut PgTransaction<'_>,
-    cache: &mut EntityCache,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+    let time = event.time;
+    let permissible_update_time = event.time - (3 * 60 * 60);
 
-    if !cache.check_region(&region) {
+    let Some(residents) = w.regions.get_mut(&region).map(|s| {
+        s.sort_unstable();
+        s.dedup();
+        s.iter().copied().collect::<Vec<_>>()
+    }) else {
         return Ok(false);
+    };
+
+    let mut to_update = Vec::new();
+    let mut valid_endorsers = Vec::new();
+
+    for index in residents {
+        if let Some(nation) = w.nations.get_mut(&index) {
+            if nation.lastupdate < permissible_update_time {
+                nation.lastupdate = time;
+                if nation.is_wa { to_update.push(index); }
+            }
+
+            if nation.is_wa {
+                valid_endorsers.push(nation.name);
+            }
+        }
     }
 
-    sqlx::query(
-        "DELETE FROM retina_endorsements e
-        USING retina_nations n
-        WHERE e.target = n.name AND n.region = $1
-        AND NOT EXISTS (
-            SELECT 1 FROM retina_nations n2 WHERE n2.name = e.endorser AND n2.region = $1
-        )"
-    ).bind(region).execute(&mut **tx).await?;
+    if to_update.is_empty() { return Ok(false); }
+    valid_endorsers.sort_unstable();
+
+    for member in to_update {
+        w.endorsements.get_mut(&member).map(|value| {
+            value.retain(|endorser| {
+                valid_endorsers.binary_search(endorser).is_ok()
+            });
+            
+            value.sort_unstable();
+            value.dedup();
+        });
+    }
 
     Ok(true)
 }
 
 pub async fn handle_new_delegate(
-    tx: &mut PgTransaction<'_>,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.receptor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
 
-    sqlx::query(
-        "UPDATE retina_nations SET delegacy = $2 WHERE name = $1"
-    ).bind(name).bind(region).execute(&mut **tx).await?;
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"));
+    };
+
+    nation.delegate = Some(region);
+
+    if let Some(old_delegate) = w.delegates.insert(region, name) {
+        if let Some(nation) = w.nations.get_mut(&old_delegate) {
+            nation.delegate = None;
+        } else {
+            return Err(anyhow::Error::msg("Not found"))
+        };
+    }
 
     Ok(true)
 }
 
 pub async fn handle_replaced_delegate(
-    tx: &mut PgTransaction<'_>,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.receptor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
-    let old_del = event.data.get(0).unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+    let old_del = w.interner.get_or_intern(event.data.get(0).unwrap());
 
-    sqlx::query(
-        "UPDATE retina_nations SET delegacy = $2 WHERE name = $1"
-    ).bind(name).bind(region).execute(&mut **tx).await?;
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"));
+    };
 
-    sqlx::query(
-        "UPDATE retina_nations SET delegacy = NULL WHERE name = $1 AND delegacy = $2"
-    ).bind(old_del).bind(region).execute(&mut **tx).await?;
+    nation.delegate = Some(region);
+
+    let resync = if let Some(old_delegate) = w.delegates.insert(region, name) {
+        if let Some(nation) = w.nations.get_mut(&old_delegate) {
+            nation.delegate = None;
+        } else {
+            return Err(anyhow::Error::msg("Not found"))
+        };
+
+        old_delegate != old_del
+    } else {
+        true
+    };
+
+    if resync {
+        if let Some(nation) = w.nations.get_mut(&old_del) {
+            nation.delegate = None;
+        } else {
+            return Err(anyhow::Error::msg("Not found"))
+        };
+    }
 
     Ok(true)
 }
 
 pub async fn handle_lost_delegate(
-    tx: &mut PgTransaction<'_>,
+    data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> Result<bool, Box<dyn Error + Send + Sync>> {
-    let name = event.receptor.as_ref().unwrap();
-    let region = event.origin.as_ref().unwrap();
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
 
-    sqlx::query(
-        "UPDATE retina_nations SET delegacy = NULL WHERE name = $1 AND delegacy = $2"
-    ).bind(name).bind(region).execute(&mut **tx).await?;
+    let Some(nation) = w.nations.get_mut(&name) else {
+        return Err(anyhow::Error::msg("Not found"));
+    };
+
+    nation.delegate = None;
+
+    if let Some(old_delegate) = w.delegates.remove(&region) && old_delegate != name {
+        // Mismatch
+        if let Some(nation) = w.nations.get_mut(&old_delegate) {
+            nation.delegate = None;
+        } else {
+            return Err(anyhow::Error::msg("Not found"))
+        };
+    }
 
     Ok(true)
 }

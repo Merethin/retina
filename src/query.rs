@@ -1,64 +1,43 @@
-use std::{collections::HashMap, error::Error};
+use std::sync::Arc;
 
 use serde::Serialize;
-use sqlx::{PgPool, Postgres};
+use tokio::sync::RwLock;
+
+use crate::data::DataStorage;
 
 pub async fn query_members(
-    pool: &PgPool,
+    data: Arc<RwLock<DataStorage>>,
     region: Option<&str>
-) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+) -> anyhow::Result<Vec<String>> {
+    let r = data.read().await;
+
+    let mut members = r.wa_nations.clone();
+    members.sort_unstable();
+    members.dedup();
+
     Ok(match region {
         None => {
-            sqlx::query_scalar(
-                "SELECT name FROM retina_nations"
-            ).fetch_all(pool).await?
+            members.into_iter().filter_map(|v| {
+                r.interner.resolve(v).map(|s| s.to_string())
+            }).collect()
         },
         Some(region) => {
-            sqlx::query_scalar(
-                "SELECT name FROM retina_nations WHERE region = $1"
-            ).bind(region).fetch_all(pool).await?
+            let Some(mut region) = r.interner.get(region).and_then(|v| r.regions.get(&v).cloned()) else {
+                return Err(anyhow::Error::msg("No such region"));
+            };
+
+            region.sort_unstable();
+            region.dedup();
+
+            region.retain(|nation| {
+                members.binary_search(nation).is_ok()
+            });
+
+            region.into_iter().filter_map(|v| {
+                r.interner.resolve(v).map(|s| s.to_string())
+            }).collect()
         }
     })
-}
-
-#[derive(Serialize)]
-pub struct Delegate {
-    name: String,
-    region: String,
-    endos_received: i64,
-    endos_given: i64,
-}
-
-pub async fn query_delegates(
-    pool: &PgPool
-) -> Result<Vec<Delegate>, Box<dyn Error + Send + Sync>> {
-    let delegates: Vec<(String, String)> = sqlx::query_as(
-        "SELECT name, delegacy FROM retina_nations WHERE delegacy IS NOT NULL"
-    ).fetch_all(pool).await?;
-
-    let names = delegates.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
-
-    let endos_received: HashMap<String, i64> = sqlx::query_as::<Postgres, (String, i64)>(
-        "SELECT target, COUNT(*) AS count FROM retina_endorsements WHERE target = ANY($1) GROUP BY target"
-    ).bind(&names).fetch_all(pool).await?.into_iter().collect();
-
-    let endos_given: HashMap<String, i64> = sqlx::query_as::<Postgres, (String, i64)>(
-        "SELECT endorser, COUNT(*) AS count FROM retina_endorsements WHERE endorser = ANY($1) GROUP BY endorser"
-    ).bind(&names).fetch_all(pool).await?.into_iter().collect();
-
-    let mut result: Vec<Delegate> = Vec::new();
-    for (name, region) in delegates {
-        let er = *endos_received.get(&name).unwrap_or(&0);
-        let eg = *endos_given.get(&name).unwrap_or(&0);
-
-        result.push(Delegate {
-            name, region,
-            endos_received: er,
-            endos_given: eg
-        });
-    }
-
-    Ok(result)
 }
 
 #[derive(Serialize, Clone)]
@@ -75,86 +54,109 @@ pub struct RegionMember {
 }
 
 pub async fn query_region(
-    pool: &PgPool,
-    region: &str,
-) -> Result<Region, Box<dyn Error + Send + Sync>> {
-    let delegate: Option<String> = sqlx::query_scalar(
-        "SELECT name FROM retina_nations WHERE delegacy = $1"
-    ).bind(region).fetch_optional(pool).await?;
+    data: Arc<RwLock<DataStorage>>,
+    name: &str,
+) -> anyhow::Result<Region> {
+    let r = data.read().await;
 
-    let members: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM retina_nations WHERE region = $1"
-    ).bind(region).fetch_all(pool).await?;
+    let Some(region) = r.interner.get(name) else {
+        return Err(anyhow::Error::msg("No such region"));
+    };
 
-    let endos_received: Vec<(String, String)> = sqlx::query_as(
-        "SELECT target, endorser FROM retina_endorsements WHERE target = ANY($1)"
-    ).bind(&members).fetch_all(pool).await?;
+    let delegate: Option<String> = r.delegates.get(&region).and_then(|&v| {
+        r.interner.resolve(v).map(|s| s.to_string())
+    });
 
-    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
-    for (target, endorser) in endos_received {
-        grouped.entry(target).or_default().push(endorser);
-    }
+    let mut members = r.wa_nations.clone();
+    members.sort_unstable();
+    members.dedup();
+
+    let Some(mut region) = r.regions.get(&region).cloned() else {
+        return Err(anyhow::Error::msg("No such region"));
+    };
+
+    region.sort_unstable();
+    region.dedup();
+
+    region.retain(|nation| {
+        members.binary_search(nation).is_ok()
+    });
 
     let mut nations = vec![];
-    for name in members {
-        let endorsements = grouped.get(&name).cloned().unwrap_or_default();
+    for nation in region {
+        let Some(name) = r.interner.resolve(nation) else { continue; };
+        let endorsements = r.endorsements.get(&nation).map(|list| list.into_iter().filter_map(|v| {
+            r.interner.resolve(*v).map(|s| s.to_string())
+        }).collect()).unwrap_or_default();
 
         nations.push(RegionMember {
-            name, endorsements
+            name: name.to_string(), endorsements
         });
     }
 
-    Ok(Region { region: region.to_string(), delegate, nations })
+    Ok(Region { region: name.to_string(), delegate, nations })
 }
 
 pub async fn query_regionmates(
-    pool: &PgPool,
+    data: Arc<RwLock<DataStorage>>,
     nation: &str,
-) -> Result<Region, Box<dyn Error + Send + Sync>> {
-    let region: String = sqlx::query_scalar(
-        "SELECT region FROM retina_nations WHERE name = $1"
-    ).bind(nation).fetch_one(pool).await?;
+) -> anyhow::Result<Region> {
+    let r = data.read().await;
 
-    query_region(pool, &region).await
+    let Some(nation) = r.interner.get(nation).and_then(|v| r.nations.get(&v)) else {
+        return Err(anyhow::Error::msg("No such nation"));
+    };
+
+    if !nation.is_wa {
+        return Err(anyhow::Error::msg("Not a World Assembly nation"));
+    }
+
+    let Some(region) = r.interner.resolve(nation.region).map(|s| s.to_string()) else {
+        return Err(anyhow::Error::msg("Unable to resolve region name"));
+    };
+
+    drop(r);
+
+    query_region(data, &region).await
 }
 
 #[derive(Serialize)]
 pub struct Nation {
     region: String,
     is_delegate: bool,
-    endos_received: Vec<String>,
-    endos_given: Vec<String>,
+    endorsements: Vec<String>,
 }
 
 pub async fn query_nation(
-    pool: &PgPool,
-    nation: &str,
-) -> Result<Nation, Box<dyn Error + Send + Sync>> {
-    let data: (String, Option<String>) = sqlx::query_as(
-        "SELECT region, delegacy FROM retina_nations WHERE name = $1"
-    ).bind(nation).fetch_one(pool).await?;
+    data: Arc<RwLock<DataStorage>>,
+    name: &str,
+) -> anyhow::Result<Nation> {
+    let r = data.read().await;
+    let Some(symbol) = r.interner.get(name) else {
+        return Err(anyhow::Error::msg("No such nation"));
+    };
 
-    let endorsements: Vec<(String, String)> = sqlx::query_as(
-        "SELECT target, endorser FROM retina_endorsements WHERE target = $1 OR endorser = $1"
-    ).bind(nation).fetch_all(pool).await?;
+    let Some(nation) = r.nations.get(&symbol) else {
+        return Err(anyhow::Error::msg("No such nation"));
+    };
 
-    let mut endos_received = vec![];
-    let mut endos_given = vec![];
-
-    for (target, endorser) in endorsements {
-        if &target == nation {
-            endos_received.push(endorser);
-        } else {
-            endos_given.push(target);
-        }
+    if !nation.is_wa {
+        return Err(anyhow::Error::msg("Not a World Assembly nation"));
     }
 
-    let is_delegate = Some(&data.0) == data.1.as_ref();
+    let Some(region) = r.interner.resolve(nation.region).map(|s| s.to_string()) else {
+        return Err(anyhow::Error::msg("Unable to resolve region name"));
+    };
+
+    let is_delegate = Some(nation.region) == nation.delegate;
+
+    let endorsements = r.endorsements.get(&symbol).map(|list| list.into_iter().filter_map(|v| {
+        r.interner.resolve(*v).map(|s| s.to_string())
+    }).collect()).unwrap_or_default();
 
     Ok(Nation {
-        region: data.0,
+        region: region,
         is_delegate,
-        endos_received,
-        endos_given
+        endorsements
     })
 }

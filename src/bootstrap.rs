@@ -1,14 +1,15 @@
-use std::{collections::HashMap, error::Error, io::Write};
-use sqlx::{PgPool, QueryBuilder, Row};
+use std::{collections::HashMap, error::Error};
+use sqlx::{PgPool, Row};
 use serde::{Serialize, Deserialize};
 
 use caramel::types::akari::Event;
 
-use crate::events::KEYS;
+use crate::{data::{DataStorage, NationData}, events::KEYS};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Nation {
     pub name: String,
+    pub is_wa: bool,
     pub is_delegate: bool,
     pub region: String,
     pub endorsements: Vec<String>,
@@ -26,43 +27,49 @@ pub async fn fetch_data_dump_and_events(
 }
 
 pub async fn bootstrap_tables_from_initial_data(
-    pool: &PgPool,
-    nations: Vec<Nation>
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut tx = pool.begin().await?;
+    nations: Vec<Nation>,
+    update_times: HashMap<String, i64>,
+) -> Result<DataStorage, Box<dyn Error + Send + Sync>> {
+    let mut data = DataStorage::new();
 
-    sqlx::query("TRUNCATE retina_nations, retina_endorsements").execute(&mut *tx).await?;
-
-    let mut qb = QueryBuilder::new(
-        "INSERT INTO retina_nations (name, delegacy, region) "
-    );
-
-    qb.push_values(&nations, |mut b, nation| {
-        b.push_bind(&nation.name)
-         .push_bind(if nation.is_delegate { Some(&nation.region) } else { None })
-         .push_bind(&nation.region);
-    });
-
-    qb.build().execute(&mut *tx).await?;
-
-    let mut copy = tx.copy_in_raw(
-        "COPY retina_endorsements (endorser, target) FROM STDIN"
-    ).await?;
-
-    let mut buf = Vec::with_capacity(64);
+    data.nations.reserve(nations.len());
 
     for nation in &nations {
-        for e in &nation.endorsements {
-            buf.clear();
-            write!(&mut buf, "{}\t{}\n", e, nation.name)?;
-            copy.send(buf.as_slice()).await?;
+        let name = data.interner.get_or_intern(&nation.name);
+        let region = data.interner.get_or_intern(&nation.region);
+
+        data.nations.insert(name, NationData {
+            name,
+            region,
+            is_wa: nation.is_wa,
+            delegate: if nation.is_delegate { Some(region) } else { None },
+            lastupdate: *update_times.get(&nation.region).unwrap_or(&0) as u64
+        });
+
+        data.regions.entry(region).or_default().push(name);
+    }
+
+    data.wa_nations = nations.iter().filter_map(|v| {
+        if v.is_wa {
+            Some(data.interner.get_or_intern(&v.name))
+        } else { None }
+    }).collect();
+
+    data.delegates = nations.iter().filter_map(|v| {
+        if v.is_delegate {
+            Some((data.interner.get_or_intern(&v.region), data.interner.get_or_intern(&v.name)))
+        } else { None }
+    }).collect();
+
+    for nation in nations {
+        if nation.is_wa {
+            let name = data.interner.get_or_intern(&nation.name);
+            let endorsements = nation.endorsements.iter().map(|v| data.interner.get_or_intern(v)).collect();
+            data.endorsements.insert(name, endorsements);
         }
     }
 
-    copy.finish().await?;
-    tx.commit().await?;
-
-    Ok(())
+    Ok(data)
 }
 
 async fn query_last_major_from_data_dump(
@@ -144,20 +151,21 @@ async fn query_data_dump_nation_state(
     pool: &PgPool,
 ) -> Result<Vec<Nation>, Box<dyn Error + Send + Sync>> {
     let result = sqlx::query(
-        "SELECT canon_name, is_delegate, region, endorsements FROM nations_dump WHERE is_wa = TRUE"
+        "SELECT canon_name, is_wa, is_delegate, region, endorsements FROM nations_dump"
     ).fetch_all(pool).await?;
 
     Ok(result.into_iter().map(|row| {
         Nation {
             name: row.get(0),
-            is_delegate: row.get(1),
-            region: row.get(2),
-            endorsements: row.get(3),
+            is_wa: row.get(1),
+            is_delegate: row.get(2),
+            region: row.get(3),
+            endorsements: row.get(4),
         }
     }).collect())
 }
 
-async fn query_update_times(
+pub async fn query_update_times(
     pool: &PgPool,
 ) -> Result<HashMap<String, i64>, Box<dyn Error + Send + Sync>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
@@ -165,22 +173,4 @@ async fn query_update_times(
     ).fetch_all(pool).await?;
 
     Ok(rows.into_iter().collect())
-}
-
-pub async fn build_nation_update_times(
-    pool: &PgPool,
-) -> Result<HashMap<String, i64>, Box<dyn Error + Send + Sync>> {
-    let region_update_times = query_update_times(pool).await?;
-
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT canon_name, region FROM nations_dump"
-    ).fetch_all(pool).await?;
-
-    let mut result = HashMap::new();
-
-    for (nation, region) in rows {
-        result.insert(nation, *region_update_times.get(&region).unwrap_or(&0));
-    }
-
-    Ok(result)
 }

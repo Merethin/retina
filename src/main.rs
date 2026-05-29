@@ -1,20 +1,20 @@
 mod actions;
 mod api;
 mod bootstrap;
-mod cache;
 mod command;
+mod data;
 mod events;
 mod query;
 mod sse;
 
 use log::error;
 use sqlx::PgPool;
-use std::{error::Error, process::exit};
-use tokio::sync::broadcast;
+use std::{error::Error, process::exit, sync::Arc};
+use tokio::sync::{RwLock, broadcast};
 
 use caramel::log::setup_log;
 
-use crate::{events::start_akari_worker, api::run_api_server, command::{Command, start_command_worker}};
+use crate::{api::run_api_server, command::{Command, start_command_worker}, data::DataStorage, events::start_akari_worker};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -29,12 +29,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (broadcast, _rx) = broadcast::channel(100);
     drop(_rx);
 
-    let sender = start_command_worker(pool.clone(), broadcast.clone()).await;
+    let data = Arc::new(RwLock::new(DataStorage::new()));
+
+    let sender = start_command_worker(pool, broadcast.clone(), data.clone()).await;
     start_akari_worker(sender.clone(), channel).await.ok();
 
     sender.send(Command::Bootstrap).await?;
 
-    run_api_server(pool, sender, broadcast).await.unwrap_or_else(|err| {
+    run_api_server(data, sender, broadcast).await.unwrap_or_else(|err| {
         error!("Error in API server: {err}");
     });
 
