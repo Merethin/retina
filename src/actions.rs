@@ -8,7 +8,7 @@ pub async fn handle_admit(
     tx: &mut PgTransaction<'_>,
     cache: &mut EntityCache,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.actor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
 
@@ -30,14 +30,14 @@ pub async fn handle_admit(
     cache.add_region(&region);
     cache.add_nation(&name);
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_resign(
     tx: &mut PgTransaction<'_>,
     cache: &mut EntityCache,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.actor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
 
@@ -56,19 +56,19 @@ pub async fn handle_resign(
     cache.remove_region(&region);
     cache.remove_nation(&name);
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_cte(
     tx: &mut PgTransaction<'_>,
     cache: &mut EntityCache,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.receptor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
 
     if !cache.check_nation(&name) {
-        return Ok(());
+        return Ok(false);
     }
 
     sqlx::query(
@@ -86,13 +86,13 @@ pub async fn handle_cte(
     cache.remove_region(&region);
     cache.remove_nation(&name);
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_endo(
     tx: &mut PgTransaction<'_>,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let endorser = event.actor.as_ref().unwrap();
     let target = event.receptor.as_ref().unwrap();
 
@@ -103,13 +103,13 @@ pub async fn handle_endo(
     .execute(&mut **tx)
     .await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_remove_endo(
     tx: &mut PgTransaction<'_>,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let endorser = event.actor.as_ref().unwrap();
     let target = event.receptor.as_ref().unwrap();
 
@@ -120,20 +120,20 @@ pub async fn handle_remove_endo(
     .execute(&mut **tx)
     .await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_move(
     tx: &mut PgTransaction<'_>,
     cache: &mut EntityCache,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.actor.as_ref().unwrap();
     let origin = event.origin.as_ref().unwrap();
     let region = event.destination.as_ref().unwrap();
 
     if !cache.check_nation(&name) {
-        return Ok(());
+        return Ok(false);
     }
 
     sqlx::query(
@@ -146,18 +146,18 @@ pub async fn handle_move(
     cache.remove_region(&origin);
     cache.add_region(&region);
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_update(
     tx: &mut PgTransaction<'_>,
     cache: &mut EntityCache,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let region = event.origin.as_ref().unwrap();
 
     if !cache.check_region(&region) {
-        return Ok(());
+        return Ok(false);
     }
 
     sqlx::query(
@@ -169,13 +169,13 @@ pub async fn handle_update(
         )"
     ).bind(region).execute(&mut **tx).await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_new_delegate(
     tx: &mut PgTransaction<'_>,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.receptor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
 
@@ -183,13 +183,13 @@ pub async fn handle_new_delegate(
         "UPDATE retina_nations SET delegacy = $2 WHERE name = $1"
     ).bind(name).bind(region).execute(&mut **tx).await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_replaced_delegate(
     tx: &mut PgTransaction<'_>,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.receptor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
     let old_del = event.data.get(0).unwrap();
@@ -202,13 +202,13 @@ pub async fn handle_replaced_delegate(
         "UPDATE retina_nations SET delegacy = NULL WHERE name = $1 AND delegacy = $2"
     ).bind(old_del).bind(region).execute(&mut **tx).await?;
 
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_lost_delegate(
     tx: &mut PgTransaction<'_>,
     event: &Event
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<bool, Box<dyn Error + Send + Sync>> {
     let name = event.receptor.as_ref().unwrap();
     let region = event.origin.as_ref().unwrap();
 
@@ -216,5 +216,5 @@ pub async fn handle_lost_delegate(
         "UPDATE retina_nations SET delegacy = NULL WHERE name = $1 AND delegacy = $2"
     ).bind(name).bind(region).execute(&mut **tx).await?;
 
-    Ok(())
+    Ok(true)
 }

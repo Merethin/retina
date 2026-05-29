@@ -22,7 +22,7 @@ async fn execute_event(
     event: &Event, 
     cache: &mut EntityCache,
     tx: &mut PgTransaction<'_>
-) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
+) -> Result<bool, Box<dyn Error + Send + Sync + 'static>> {
     match event.category.as_str() {
         "wadmit" => handle_admit(tx, cache, event).await,
         "wresign" | "wkick" => handle_resign(tx, cache, event).await,
@@ -34,7 +34,7 @@ async fn execute_event(
         "ndel" => handle_new_delegate(tx, event).await,
         "rdel" => handle_replaced_delegate(tx, event).await,
         "ldel" => handle_lost_delegate(tx, event).await,
-        _ => Ok(())
+        _ => Ok(false)
     }
 }
 
@@ -82,11 +82,11 @@ async fn run_event(
 
     let mut tx = pool.begin().await?;
 
-    execute_event(&event, cache, &mut tx).await.ok();
+    let handled = execute_event(&event, cache, &mut tx).await.unwrap_or(false);
     *last_event_id = event.event;
     tx.commit().await?;
 
-    if broadcast.receiver_count() > 0 && event.category != "rupdate" {
+    if handled && broadcast.receiver_count() > 0 && event.category != "rupdate" {
         broadcast.send((
             event.clone(),
             if let Some(region) = &event.origin {
