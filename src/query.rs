@@ -61,14 +61,14 @@ pub async fn query_delegates(
     Ok(result)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Region {
-    region: String,
+    pub region: String,
     delegate: Option<String>,
     nations: Vec<RegionMember>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct RegionMember {
     name: String,
     endorsements: Vec<String>,

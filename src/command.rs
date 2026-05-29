@@ -4,11 +4,14 @@ use std::error::Error;
 use caramel::types::akari::Event;
 use log::{info, error};
 use sqlx::{PgPool, PgTransaction};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{Sender, Receiver, channel};
 
 use crate::cache::EntityCache;
 use crate::bootstrap::{bootstrap_tables_from_initial_data, build_nation_update_times, fetch_data_dump_and_events};
 use crate::actions::*;
+use crate::query::query_region;
+use crate::sse::RegionEvent;
 
 pub enum Command {
     Event(Event),
@@ -35,11 +38,11 @@ async fn execute_event(
     }
 }
 
-pub async fn start_command_worker(pool: PgPool) -> Sender<Command> {
+pub async fn start_command_worker(pool: PgPool, broadcast: broadcast::Sender<RegionEvent>) -> Sender<Command> {
     let (tx, rx) = channel(1000);
 
     tokio::spawn(async move {
-        worker(rx, pool).await.unwrap_or_else(|err| {
+        worker(rx, broadcast, pool).await.unwrap_or_else(|err| {
             error!("Error in command processing worker: {err}");
         });
     });
@@ -49,6 +52,7 @@ pub async fn start_command_worker(pool: PgPool) -> Sender<Command> {
 
 async fn worker(
     mut rx: Receiver<Command>,
+    broadcast: broadcast::Sender<RegionEvent>,
     pool: PgPool,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut last_event_id = 0i64;
@@ -56,7 +60,7 @@ async fn worker(
 
     while let Some(command) = rx.recv().await {
         match command {
-            Command::Event(event) => run_event(event, &mut rx, &pool, &mut cache, &mut last_event_id).await?,
+            Command::Event(event) => run_event(event, &pool, &broadcast, &mut cache, &mut last_event_id).await?,
             Command::Bootstrap => run_bootstrap(&pool, &mut cache, &mut last_event_id).await?,
         }
     }
@@ -66,8 +70,8 @@ async fn worker(
 
 async fn run_event(
     event: Event,
-    rx: &mut Receiver<Command>,
     pool: &PgPool,
+    broadcast: &broadcast::Sender<RegionEvent>,
     cache: &mut EntityCache,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -80,31 +84,19 @@ async fn run_event(
 
     execute_event(&event, cache, &mut tx).await.ok();
     *last_event_id = event.event;
-
-    let mut pending_events = 1;
-
-    // If there are events queued immediately, process them in batches
-    while let Some(command) = rx.try_recv().ok() {
-        match command {
-            Command::Event(event) => {
-                execute_event(&event, cache, &mut tx).await.ok();
-                *last_event_id = event.event;
-                pending_events += 1;
-
-                if pending_events > 50 {
-                    break;
-                }
-            },
-            Command::Bootstrap => {
-                tx.commit().await?; // Flush events before bootstrap
-
-                run_bootstrap(pool, cache, last_event_id).await?;
-                return Ok(());
-            }
-        }
-    }
-
     tx.commit().await?;
+
+    if broadcast.receiver_count() > 0 && event.category != "rupdate" {
+        broadcast.send((
+            event.clone(),
+            if let Some(region) = &event.origin {
+                query_region(pool, region).await.ok()
+            } else { None },
+            if let Some(region) = &event.destination {
+                query_region(pool, region).await.ok()
+            } else { None }
+        )).ok();
+    }
 
     Ok(())
 }

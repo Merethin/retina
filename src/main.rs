@@ -10,6 +10,7 @@ mod sse;
 use log::error;
 use sqlx::PgPool;
 use std::{error::Error, process::exit};
+use tokio::sync::broadcast;
 
 use caramel::log::setup_log;
 
@@ -25,12 +26,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let channel = conn.create_channel().await?;
     let pool = connect_to_db().await;
 
-    let sender = start_command_worker(pool.clone()).await;
+    let (broadcast, _rx) = broadcast::channel(100);
+    drop(_rx);
+
+    let sender = start_command_worker(pool.clone(), broadcast.clone()).await;
     start_akari_worker(sender.clone(), channel).await.ok();
 
     sender.send(Command::Bootstrap).await?;
 
-    run_api_server(pool, sender).await.unwrap_or_else(|err| {
+    run_api_server(pool, sender, broadcast).await.unwrap_or_else(|err| {
         error!("Error in API server: {err}");
     });
 

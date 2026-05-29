@@ -1,28 +1,26 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, extract::{Path, State}, http::StatusCode, routing::{get, post}};
-use caramel::types::akari::Event;
 use sqlx::PgPool;
 use tokio::sync::{mpsc, broadcast};
 
-use crate::{command::Command, query::{Delegate, Nation, Region, query_delegates, query_members, query_nation, query_region, query_regionmates}};
+use crate::{command::Command, query::{Delegate, Nation, Region, query_delegates, query_members, query_nation, query_region, query_regionmates}, sse::RegionEvent};
 use crate::sse::start_stream;
 
 #[derive(Clone)]
 pub struct ApiState {
     pub pool: PgPool,
     pub sender: mpsc::Sender<Command>,
-    pub broadcast: Arc<broadcast::Sender<Event>>,
+    pub broadcast: Arc<broadcast::Sender<RegionEvent>>,
 }
 
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 pub async fn run_api_server(
     pool: PgPool,
-    sender: mpsc::Sender<Command>
+    sender: mpsc::Sender<Command>,
+    broadcast: broadcast::Sender<RegionEvent>
 ) -> Result<(), std::io::Error> {
-    let (tx, _) = broadcast::channel(100);
-
     let app = Router::new()
         .route("/members", get(world_members))
         .route("/members/{name}", get(region_members))
@@ -30,9 +28,9 @@ pub async fn run_api_server(
         .route("/region/{name}", get(region))
         .route("/regionmates/{name}", get(regionmates))
         .route("/nation/{name}", get(nation))
-        .route("/sse/{events}/{view}/{output}", get(start_stream))
+        .route("/sse/{events}/{view}", get(start_stream))
         .route("/bootstrap", post(bootstrap))
-        .with_state(ApiState { pool, sender, broadcast: Arc::new(tx) });
+        .with_state(ApiState { pool, sender, broadcast: Arc::new(broadcast) });
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:16636")
         .await
