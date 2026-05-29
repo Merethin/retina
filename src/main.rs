@@ -1,9 +1,11 @@
-mod bootstrap;
 mod actions;
+mod api;
+mod bootstrap;
+mod cache;
 mod command;
 mod events;
-mod cache;
-mod api;
+mod query;
+mod sse;
 
 use log::error;
 use sqlx::PgPool;
