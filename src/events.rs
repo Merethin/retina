@@ -9,6 +9,7 @@ use caramel::akari::{create_consumer, consume};
 lazy_static! {
     pub static ref KEYS: Vec<&'static str> = vec![
         "wadmit", "wresign", "wkick", "ncte", 
+        "nfound", "nrefound",
         "wendo", "wunendo", 
         "move",
         "rupdate", 
