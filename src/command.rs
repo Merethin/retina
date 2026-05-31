@@ -116,7 +116,8 @@ async fn should_execute_event(
     };
 
     let Some(nation) = r.nations.get(&index) else {
-        return false
+        if event.category == "nfound" || event.category == "nrefound" { return true; }
+        return false;
     };
 
     return event.time >= nation.lastupdate;
