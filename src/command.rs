@@ -108,7 +108,7 @@ async fn should_execute_event(
     let r = data.read().await;
 
     let Some(index) = r.interner.get(match event.category.as_str() {
-        "wadmit" | "wresign" | "move" | "nfound" | "nrefound" => event.actor.as_ref().unwrap(),
+        "wadmit" | "wresign" | "wkick" | "move" | "nfound" | "nrefound" => event.actor.as_ref().unwrap(),
         // Endos are tracked by target so we return receptor
         _ => event.receptor.as_ref().unwrap()
     }) else {
