@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use caramel::types::akari::Event;
 use log::{info, error};
@@ -65,7 +66,7 @@ async fn worker(
     while let Some(command) = rx.recv().await {
         match command {
             Command::Event(event) => run_event(event, &broadcast, data.clone(), &mut last_event_id).await?,
-            Command::Bootstrap => run_bootstrap(&pool, data.clone(), &mut last_event_id).await?,
+            Command::Bootstrap => run_bootstrap(&pool, &broadcast, data.clone(), &mut last_event_id).await?,
         }
     }
 
@@ -125,6 +126,7 @@ async fn should_execute_event(
 
 async fn run_bootstrap(
     pool: &PgPool,
+    broadcast: &broadcast::Sender<RegionEvent>,
     data: Arc<RwLock<DataStorage>>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -153,6 +155,19 @@ async fn run_bootstrap(
         }
 
         info!("Bootstrap complete, final event: {}", *last_event_id);
+
+        broadcast.send((
+            Event {
+                event: -1,
+                time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                actor: None,
+                receptor: None,
+                origin: None,
+                destination: None,
+                category: "rtboot".into(),
+                data: vec![last_event_id.to_string()]
+            }, None, None
+        )).ok();
     }
 
     Ok(())
