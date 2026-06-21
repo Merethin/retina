@@ -26,7 +26,7 @@ pub async fn run_api_server(
         .route("/region/{name}", get(region))
         .route("/regionmates/{name}", get(regionmates))
         .route("/nation/{name}", get(nation))
-        .route("/sse/{events}/{view}", get(start_stream))
+        .route("/sse/{view}", get(start_stream))
         .route("/bootstrap", post(bootstrap))
         .with_state(ApiState { data, sender, broadcast: Arc::new(broadcast) });
 
@@ -54,7 +54,7 @@ async fn region_members(
     Path(name): Path<String>,
 ) -> ApiResult<Json<Vec<String>>> {
     let members = query_members(state.data, Some(&name)).await.map_err(|err| {
-        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        (StatusCode::NOT_FOUND, err.to_string())
     })?;
 
     Ok(Json(members))

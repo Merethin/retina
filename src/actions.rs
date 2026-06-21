@@ -1,7 +1,44 @@
 use std::sync::Arc;
 use caramel::types::akari::Event;
 use tokio::sync::RwLock;
-use crate::data::{DataStorage, NationData};
+use crate::{bootstrap::Nation, data::{DataStorage, NationData}};
+
+pub async fn insert_nation_if_missing(
+    data: Arc<RwLock<DataStorage>>,
+    nation: &Nation
+) -> anyhow::Result<bool> {
+    let mut w = data.write().await;
+
+    let name = w.interner.get_or_intern(&nation.name);
+
+    if w.nations.contains_key(&name) {
+        return Ok(false);
+    }
+
+    let region = w.interner.get_or_intern(&nation.region);
+
+    w.nations.insert(name, NationData {
+        name,
+        region,
+        is_wa: nation.is_wa,
+        delegate: if nation.is_delegate { Some(region) } else { None },
+        lastupdate: 0
+    });
+
+    w.regions.entry(region).or_default().push(name);
+
+    if nation.is_wa {
+        let endorsements = nation.endorsements.iter().map(|v| w.interner.get_or_intern(v)).collect();
+        w.endorsements.insert(name, endorsements);
+        w.wa_nations.push(name);
+
+        if nation.is_delegate {
+            w.delegates.insert(region, name);
+        }
+    }
+
+    Ok(true)
+}
 
 pub async fn handle_admit(
     data: Arc<RwLock<DataStorage>>,
@@ -106,7 +143,6 @@ pub async fn handle_endo(
     let target = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
 
     w.endorsements.entry(target).or_default().push(endorser);
-
 
     Ok(true)
 }

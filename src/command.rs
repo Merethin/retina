@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use tokio::sync::{RwLock, broadcast};
 use tokio::sync::mpsc::{Sender, Receiver, channel};
 
-use crate::bootstrap::{bootstrap_tables_from_initial_data, fetch_data_dump_and_events, query_update_times};
+use crate::bootstrap::{bootstrap_storage_from_initial_data, fetch_data_dump_and_events, query_update_times, save_nonupdaters};
 use crate::actions::*;
 use crate::data::DataStorage;
 use crate::query::query_region;
@@ -130,12 +130,17 @@ async fn run_bootstrap(
     data: Arc<RwLock<DataStorage>>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    if let Ok((nations, update_events, subseq_events)) = fetch_data_dump_and_events(pool).await {
+    if let Ok((nations, update_events, subseq_events, update_start)) = fetch_data_dump_and_events(pool).await {
         info!("Bootstrapping state from data dump ({} nations) + {} update events + {} subsequent events", nations.len(), update_events.len(), subseq_events.len());
 
         let update_times = query_update_times(pool).await?;
 
-        *data.write().await = bootstrap_tables_from_initial_data(nations, update_times).await?;
+        let saved = {
+            let r = data.read().await;
+            save_nonupdaters(update_start, &update_events, &r)
+        };
+
+        *data.write().await = bootstrap_storage_from_initial_data(nations, update_times)?;
 
         info!("Bootstrapped initial state, filling in update & subsequent events");
 
@@ -147,7 +152,13 @@ async fn run_bootstrap(
             *last_event_id = event.event;
         }
 
-        info!("Filled in update events, moving on to subsequent events");
+        info!("Filled in update events, moving on to nonupdaters");
+
+        for nation in saved {
+            insert_nation_if_missing(data.clone(), &nation).await?;
+        }
+
+        info!("Filled in nonupdaters, moving on to subsequent events");
 
         for event in subseq_events {
             execute_event(&event, data.clone()).await.ok();

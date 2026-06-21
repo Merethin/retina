@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error};
+use std::{collections::{HashMap, HashSet}, error::Error};
 use sqlx::{PgPool, Row};
 use serde::{Serialize, Deserialize};
 
@@ -17,16 +17,16 @@ pub struct Nation {
 
 pub async fn fetch_data_dump_and_events(
     pool: &PgPool
-) -> Result<(Vec<Nation>, Vec<Event>, Vec<Event>), Box<dyn Error + Send + Sync>> {
+) -> Result<(Vec<Nation>, Vec<Event>, Vec<Event>, i64), Box<dyn Error + Send + Sync>> {
     let (update_start, update_end) = query_last_major_from_data_dump(pool).await?;
     let nations = query_data_dump_nation_state(pool).await?;
     let update_events = query_update_bootstrap_events(pool, update_start, update_end, KEYS.to_vec()).await?;
     let subseq_events = query_subsequent_bootstrap_events(pool, update_end, KEYS.to_vec()).await?;
 
-    Ok((nations, update_events, subseq_events))
+    Ok((nations, update_events, subseq_events, update_start))
 }
 
-pub async fn bootstrap_tables_from_initial_data(
+pub fn bootstrap_storage_from_initial_data(
     nations: Vec<Nation>,
     update_times: HashMap<String, i64>,
 ) -> Result<DataStorage, Box<dyn Error + Send + Sync>> {
@@ -70,6 +70,55 @@ pub async fn bootstrap_tables_from_initial_data(
     }
 
     Ok(data)
+}
+
+// Save a list of nations that are expected to not have updated this major update from the current snapshot.
+// If after bootstrap, any of these nations are missing from the new snapshot, they will be reinserted.
+pub fn save_nonupdaters(
+    update_start: i64,
+    update_events: &Vec<Event>,
+    storage: &DataStorage
+) -> Vec<Nation> {
+    let mut nations: HashSet<String> = HashSet::new();
+
+    for event in update_events {
+        match event.category.as_str() {
+            "move" | "nfound" | "nrefound" => nations.insert(event.actor.clone().unwrap()),
+            _ => false,
+        };
+    }
+
+    let mut result = Vec::new();
+
+    for name in nations {
+        let Some((nation, symbol)) = storage.interner.get(&name).and_then(
+            |s| storage.nations.get(&s).map(|v| (v, s))
+        ) else { continue; };
+
+        if nation.lastupdate > (update_start as u64) {
+            continue;
+        }
+
+        let Some(region) = storage.interner.resolve(nation.region).map(|s| s.to_string()) else {
+            continue;
+        };
+
+        let is_delegate = Some(nation.region) == nation.delegate;
+
+        let endorsements = storage.endorsements.get(&symbol).map(|list| list.into_iter().filter_map(|v| {
+            storage.interner.resolve(*v).map(|s| s.to_string())
+        }).collect()).unwrap_or_default();
+
+        result.push(Nation { 
+            name: name.clone(), 
+            is_wa: nation.is_wa,
+            is_delegate, 
+            region, 
+            endorsements
+        });
+    }
+
+    result
 }
 
 async fn query_last_major_from_data_dump(

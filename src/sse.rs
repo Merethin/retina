@@ -53,16 +53,11 @@ impl View {
 }
 
 pub struct StreamParams {
-    pub events: HashSet<String>,
     pub view: HashSet<View>
 }
 
 impl StreamParams {
     fn matches(&self, event: &Event) -> bool {
-        if !self.events.contains(&event.category) {
-            return false;
-        }
-
         if self.view.contains(&View::World) {
             return true;
         }
@@ -121,13 +116,12 @@ where
         parts: &mut Parts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        let Path((events, view)) = Path::<(String, String)>::from_request_parts(parts, state).await.map_err(|e| {
+        let Path(view) = Path::<String>::from_request_parts(parts, state).await.map_err(|e| {
             (StatusCode::BAD_REQUEST, e.to_string())
         })?;
 
-        let events = events.split("+").map(|v| v.to_string()).collect();
         let view = view.split("+").flat_map(View::parse).collect();
 
-        Ok(Self(StreamParams { events, view }))
+        Ok(Self(StreamParams { view }))
     }
 }
