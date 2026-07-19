@@ -25,7 +25,7 @@ pub async fn insert_nation_if_missing(
         lastupdate: 0
     });
 
-    w.regions.entry(region).or_default().push(name);
+    w.regions.entry(region).or_default().nations.push(name);
 
     if nation.is_wa {
         let endorsements = nation.endorsements.iter().map(|v| w.interner.get_or_intern(v)).collect();
@@ -33,7 +33,7 @@ pub async fn insert_nation_if_missing(
         w.wa_nations.push(name);
 
         if nation.is_delegate {
-            w.delegates.insert(region, name);
+            w.regions.entry(region).or_default().delegate = Some(name);
         }
     }
 
@@ -72,7 +72,7 @@ pub async fn handle_resign(
     let delegacy = std::mem::replace(&mut nation.delegate, None);
 
     if let Some(delegacy) = delegacy {
-        w.delegates.remove(&delegacy);
+        w.regions.entry(delegacy).or_default().delegate = None;
     }
 
     w.wa_nations.retain(|v| *v != name);
@@ -99,7 +99,7 @@ pub async fn handle_found(
         lastupdate: 0
     });
 
-    w.regions.entry(region).or_default().push(name);
+    w.regions.entry(region).or_default().nations.push(name);
 
     Ok(true)
 }
@@ -120,11 +120,11 @@ pub async fn handle_cte(
     }
 
     if let Some(delegate) = nation.delegate {
-        w.delegates.remove(&delegate);
+        w.regions.entry(delegate).or_default().delegate = None;
     }
 
     if let Some(region) = w.regions.get_mut(&nation.region) {
-        region.retain(|v| *v != name);
+        region.nations.retain(|v| *v != name);
     }
 
     w.endorsements.get_mut(&name).map(|value| {
@@ -178,10 +178,10 @@ pub async fn handle_move(
     nation.region = dest;
 
     if let Some(set) = w.regions.get_mut(&origin) {
-        set.retain(|v| *v != name);
+        set.nations.retain(|v| *v != name);
     }
 
-    w.regions.entry(dest).or_default().push(name);
+    w.regions.entry(dest).or_default().nations.push(name);
 
     Ok(true)
 }
@@ -196,9 +196,10 @@ pub async fn handle_update(
     let permissible_update_time = event.time - (3 * 60 * 60);
 
     let Some(residents) = w.regions.get_mut(&region).map(|s| {
-        s.sort_unstable();
-        s.dedup();
-        s.iter().copied().collect::<Vec<_>>()
+        s.lastupdate = time;
+        s.nations.sort_unstable();
+        s.nations.dedup();
+        s.nations.iter().copied().collect::<Vec<_>>()
     }) else {
         return Ok(false);
     };
@@ -250,13 +251,7 @@ pub async fn handle_new_delegate(
 
     nation.delegate = Some(region);
 
-    if let Some(old_delegate) = w.delegates.insert(region, name) {
-        if let Some(nation) = w.nations.get_mut(&old_delegate) {
-            nation.delegate = None;
-        } else {
-            return Err(anyhow::Error::msg("Not found"))
-        };
-    }
+    w.regions.entry(region).or_default().delegate = Some(name);
 
     Ok(true)
 }
@@ -276,25 +271,13 @@ pub async fn handle_replaced_delegate(
 
     nation.delegate = Some(region);
 
-    let resync = if let Some(old_delegate) = w.delegates.insert(region, name) {
-        if let Some(nation) = w.nations.get_mut(&old_delegate) {
-            nation.delegate = None;
-        } else {
-            return Err(anyhow::Error::msg("Not found"))
-        };
+    w.regions.entry(region).or_default().delegate = Some(name);
 
-        old_delegate != old_del
+    if let Some(nation) = w.nations.get_mut(&old_del) {
+        nation.delegate = None;
     } else {
-        true
+        return Err(anyhow::Error::msg("Not found"))
     };
-
-    if resync {
-        if let Some(nation) = w.nations.get_mut(&old_del) {
-            nation.delegate = None;
-        } else {
-            return Err(anyhow::Error::msg("Not found"))
-        };
-    }
 
     Ok(true)
 }
@@ -312,15 +295,7 @@ pub async fn handle_lost_delegate(
     };
 
     nation.delegate = None;
-
-    if let Some(old_delegate) = w.delegates.remove(&region) && old_delegate != name {
-        // Mismatch
-        if let Some(nation) = w.nations.get_mut(&old_delegate) {
-            nation.delegate = None;
-        } else {
-            return Err(anyhow::Error::msg("Not found"))
-        };
-    }
+    w.regions.entry(region).or_default().delegate = None;
 
     Ok(true)
 }

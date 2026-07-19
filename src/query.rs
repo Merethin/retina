@@ -26,14 +26,14 @@ pub async fn query_members(
                 return Err(anyhow::Error::msg("No such region"));
             };
 
-            region.sort_unstable();
-            region.dedup();
+            region.nations.sort_unstable();
+            region.nations.dedup();
 
-            region.retain(|nation| {
+            region.nations.retain(|nation| {
                 members.binary_search(nation).is_ok()
             });
 
-            region.into_iter().filter_map(|v| {
+            region.nations.into_iter().filter_map(|v| {
                 r.interner.resolve(v).map(|s| s.to_string())
             }).collect()
         }
@@ -45,6 +45,8 @@ pub struct Region {
     pub region: String,
     delegate: Option<String>,
     nations: Vec<RegionMember>,
+    total_nations: usize,
+    last_update: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -63,10 +65,6 @@ pub async fn query_region(
         return Err(anyhow::Error::msg("No such region"));
     };
 
-    let delegate: Option<String> = r.delegates.get(&region).and_then(|&v| {
-        r.interner.resolve(v).map(|s| s.to_string())
-    });
-
     let mut members = r.wa_nations.clone();
     members.sort_unstable();
     members.dedup();
@@ -75,15 +73,17 @@ pub async fn query_region(
         return Err(anyhow::Error::msg("No such region"));
     };
 
-    region.sort_unstable();
-    region.dedup();
+    region.nations.sort_unstable();
+    region.nations.dedup();
 
-    region.retain(|nation| {
+    let total_nations: usize = region.nations.len();
+
+    region.nations.retain(|nation| {
         members.binary_search(nation).is_ok()
     });
 
     let mut nations = vec![];
-    for nation in region {
+    for nation in region.nations {
         let Some(name) = r.interner.resolve(nation) else { continue; };
         let endorsements = r.endorsements.get(&nation).map(|list| list.into_iter().filter_map(|v| {
             r.interner.resolve(*v).map(|s| s.to_string())
@@ -94,7 +94,15 @@ pub async fn query_region(
         });
     }
 
-    Ok(Region { region: name.to_string(), delegate, nations })
+    let delegate = region.delegate.and_then(|d| r.interner.resolve(d).map(|s| s.to_string()));
+
+    Ok(Region { 
+        region: name.to_string(), 
+        delegate, 
+        nations, 
+        total_nations, 
+        last_update: region.lastupdate 
+    })
 }
 
 pub async fn query_regionmates(

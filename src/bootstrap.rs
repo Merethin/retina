@@ -34,6 +34,10 @@ pub fn bootstrap_storage_from_initial_data(
 
     data.nations.reserve(nations.len());
 
+    for (region, time) in &update_times {
+        data.regions.entry(data.interner.get_or_intern(region)).or_default().lastupdate = *time as u64;
+    }
+
     for nation in &nations {
         let name = data.interner.get_or_intern(&nation.name);
         let region = data.interner.get_or_intern(&nation.region);
@@ -46,18 +50,16 @@ pub fn bootstrap_storage_from_initial_data(
             lastupdate: *update_times.get(&nation.region).unwrap_or(&0) as u64
         });
 
-        data.regions.entry(region).or_default().push(name);
+        data.regions.entry(region).or_default().nations.push(name);
+
+        if nation.is_delegate {
+            data.regions.entry(region).or_default().delegate = Some(name);
+        }
     }
 
     data.wa_nations = nations.iter().filter_map(|v| {
         if v.is_wa {
             Some(data.interner.get_or_intern(&v.name))
-        } else { None }
-    }).collect();
-
-    data.delegates = nations.iter().filter_map(|v| {
-        if v.is_delegate {
-            Some((data.interner.get_or_intern(&v.region), data.interner.get_or_intern(&v.name)))
         } else { None }
     }).collect();
 
