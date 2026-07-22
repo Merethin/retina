@@ -53,6 +53,8 @@ pub async fn handle_admit(
 
     nation.is_wa = true;
     w.wa_nations.push(name);
+    w.wa_nations.sort_unstable();
+    w.wa_nations.dedup();
 
     Ok(true)
 }
@@ -142,7 +144,10 @@ pub async fn handle_endo(
     let endorser = w.interner.get_or_intern(event.actor.as_ref().unwrap());
     let target = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
 
-    w.endorsements.entry(target).or_default().push(endorser);
+    let endorsements = w.endorsements.entry(target).or_default();
+    endorsements.push(endorser);
+    endorsements.sort_unstable();
+    endorsements.dedup();
 
     Ok(true)
 }
