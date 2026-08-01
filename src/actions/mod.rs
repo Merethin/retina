@@ -9,7 +9,7 @@ mod wa;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use caramel::types::akari::Event;
-use crate::data::DataStorage;
+use crate::{data::DataStorage, events::SubscriptionEvent};
 
 use delegate::{handle_new_delegate, handle_replaced_delegate, handle_lost_delegate};
 use endo::{handle_endo, handle_remove_endo};
@@ -23,7 +23,7 @@ pub use insert::insert_nation_if_missing;
 pub async fn execute_event(
     event: &Event, 
     data: Arc<RwLock<DataStorage>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Vec<SubscriptionEvent>> {
     match event.category.as_str() {
         "wadmit" => handle_admit(data, event).await,
         "wresign" | "wkick" => handle_resign(data, event).await,
@@ -36,6 +36,6 @@ pub async fn execute_event(
         "ndel" => handle_new_delegate(data, event).await,
         "rdel" => handle_replaced_delegate(data, event).await,
         "ldel" => handle_lost_delegate(data, event).await,
-        _ => Ok(false)
+        _ => Ok(vec![])
     }
 }

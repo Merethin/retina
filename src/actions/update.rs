@@ -1,22 +1,35 @@
 use std::sync::Arc;
 use caramel::types::akari::Event;
 use tokio::sync::RwLock;
-use crate::data::DataStorage;
+use crate::{data::DataStorage, events::{NationChangeEvent, RegionChangeEvent, RegionUpdateEvent, SubscriptionEvent::{self, NationChange, RegionChange, RegionUpdate}}, graphql::{Nation, Region}};
 
 pub async fn handle_update(
     data: Arc<RwLock<DataStorage>>,
     event: &Event
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Vec<SubscriptionEvent>> {
     let mut w = data.write().await;
     let region = w.interner.get_or_intern(event.origin.as_ref().unwrap());
     let time = event.time;
     let permissible_update_time = event.time - (3 * 60 * 60);
 
+    let mut events = vec![];
+
     let Some(residents) = w.regions.get_mut(&region).map(|s| {
         s.lastupdate = time;
-        s.nations.iter().copied().collect::<Vec<_>>()
+        let nations = s.nations.iter().copied().collect::<Vec<_>>();
+        let region = Region::from_region_data(region, s);
+
+        events.push(RegionUpdate(RegionUpdateEvent {
+            name: event.origin.clone().unwrap(), region: region.clone()
+        }));
+
+        events.push(RegionChange(RegionChangeEvent {
+            name: event.origin.clone().unwrap(), region
+        }));
+
+        nations
     }) else {
-        return Ok(false);
+        return Ok(vec![]);
     };
 
     let mut to_update = Vec::new();
@@ -27,6 +40,14 @@ pub async fn handle_update(
             if nation.lastupdate < permissible_update_time {
                 nation.lastupdate = time;
                 if nation.is_wa { to_update.push(index); }
+                else {
+                    let nation = Nation::from_nation_data(nation);
+                    events.push(NationChange(NationChangeEvent {
+                        name: w.interner.resolve(index).unwrap().to_string(), nation
+                    }));
+
+                    continue;
+                }
             }
 
             if nation.is_wa {
@@ -35,16 +56,22 @@ pub async fn handle_update(
         }
     }
 
-    if to_update.is_empty() { return Ok(false); }
+    if to_update.is_empty() { return Ok(events); }
     valid_endorsers.sort_unstable();
 
     for member in to_update {
+        let name = w.interner.resolve(member).unwrap().to_string();
+
         w.nations.get_mut(&member).map(|value| {
             value.endorsements.retain(|endorser| {
                 valid_endorsers.binary_search(endorser).is_ok()
             });
+
+            events.push(NationChange(NationChangeEvent {
+                name, nation: Nation::from_nation_data(value)
+            }));
         });
     }
 
-    Ok(true)
+    Ok(events)
 }
