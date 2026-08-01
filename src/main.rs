@@ -1,11 +1,10 @@
 mod actions;
-mod api;
 mod bootstrap;
 mod command;
 mod data;
 mod events;
-mod query;
-mod sse;
+mod graphql;
+mod server;
 
 use log::error;
 use sqlx::PgPool;
@@ -14,7 +13,7 @@ use tokio::sync::{RwLock, broadcast};
 
 use caramel::log::setup_log;
 
-use crate::{api::run_api_server, command::{Command, start_command_worker}, data::DataStorage, events::start_akari_worker};
+use crate::{server::run_server, command::{Command, start_command_worker}, data::DataStorage, events::start_akari_worker};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -36,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     sender.send(Command::Bootstrap).await?;
 
-    run_api_server(data, sender, broadcast).await.unwrap_or_else(|err| {
+    run_server(data, sender, broadcast).await.unwrap_or_else(|err| {
         error!("Error in API server: {err}");
     });
 
