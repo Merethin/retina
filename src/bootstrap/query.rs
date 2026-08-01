@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 
 use caramel::types::akari::Event;
 
-use crate::events::KEYS;
+use crate::akari::KEYS;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Nation {

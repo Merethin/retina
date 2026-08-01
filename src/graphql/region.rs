@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::{data::{DataStorage, RegionData}, graphql::nation::Nation};
 
-#[derive(SimpleObject)]
+#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct Region {
     #[graphql(skip)]

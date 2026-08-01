@@ -6,7 +6,7 @@ use log::info;
 use sqlx::PgPool;
 use tokio::sync::{RwLock, broadcast};
 
-use crate::{actions::{execute_event, insert_nation_if_missing}, bootstrap::query::{fetch_data_dump_and_events, query_update_times}, data::{DataStorage, NationData}};
+use crate::{actions::{execute_event, insert_nation_if_missing}, bootstrap::query::{fetch_data_dump_and_events, query_update_times}, data::{DataStorage, NationData}, events::{BootstrapEvent, SubscriptionEvent::{self, Bootstrap}}};
 
 pub use query::Nation;
 
@@ -34,7 +34,7 @@ async fn should_execute_event(
 
 pub async fn run_bootstrap(
     pool: &PgPool,
-    broadcast: &broadcast::Sender<()>,
+    broadcast: &broadcast::Sender<SubscriptionEvent>,
     data: Arc<RwLock<DataStorage>>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -75,7 +75,7 @@ pub async fn run_bootstrap(
 
         info!("Bootstrap complete, final event: {}", *last_event_id);
 
-        // FIXME: Handle rtboot broadcast through GraphQL
+        broadcast.send(Bootstrap(BootstrapEvent { last_id: *last_event_id })).ok();
     }
 
     Ok(())

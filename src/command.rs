@@ -10,6 +10,7 @@ use tokio::sync::mpsc::{Sender, Receiver, channel};
 use crate::bootstrap::run_bootstrap;
 use crate::actions::execute_event;
 use crate::data::DataStorage;
+use crate::events::SubscriptionEvent;
 
 pub enum Command {
     Event(Event),
@@ -18,7 +19,7 @@ pub enum Command {
 
 pub async fn start_command_worker(
     pool: PgPool, 
-    broadcast: broadcast::Sender<()>,
+    broadcast: broadcast::Sender<SubscriptionEvent>,
     data: Arc<RwLock<DataStorage>>,
 ) -> Sender<Command> {
     let (tx, rx) = channel(1000);
@@ -34,7 +35,7 @@ pub async fn start_command_worker(
 
 async fn worker(
     mut rx: Receiver<Command>,
-    broadcast: broadcast::Sender<()>,
+    broadcast: broadcast::Sender<SubscriptionEvent>,
     pool: PgPool,
     data: Arc<RwLock<DataStorage>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -52,7 +53,7 @@ async fn worker(
 
 async fn run_event(
     event: Event,
-    broadcast: &broadcast::Sender<()>,
+    broadcast: &broadcast::Sender<SubscriptionEvent>,
     data: Arc<RwLock<DataStorage>>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -61,10 +62,12 @@ async fn run_event(
         return Ok(());
     }
 
-    let handled = execute_event(&event, data.clone()).await.unwrap_or(false);
+    let events = execute_event(&event, data.clone()).await.unwrap_or(vec![]);
     *last_event_id = event.event;
 
-    // FIXME: Handle event broadcast through GraphQL
+    for event in events {
+        broadcast.send(event).ok();
+    }
 
     Ok(())
 }
