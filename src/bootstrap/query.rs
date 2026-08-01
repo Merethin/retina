@@ -1,10 +1,10 @@
-use std::{collections::{HashMap, HashSet}, error::Error};
+use std::{collections::HashMap, error::Error};
 use sqlx::{PgPool, Row};
 use serde::{Serialize, Deserialize};
 
 use caramel::types::akari::Event;
 
-use crate::{data::{DataStorage, NationData}, events::KEYS};
+use crate::events::KEYS;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Nation {
@@ -24,103 +24,6 @@ pub async fn fetch_data_dump_and_events(
     let subseq_events = query_subsequent_bootstrap_events(pool, update_end, KEYS.to_vec()).await?;
 
     Ok((nations, update_events, subseq_events, update_start))
-}
-
-pub fn bootstrap_storage_from_initial_data(
-    nations: Vec<Nation>,
-    update_times: HashMap<String, i64>,
-) -> Result<DataStorage, Box<dyn Error + Send + Sync>> {
-    let mut data = DataStorage::new();
-
-    data.nations.reserve(nations.len());
-
-    for (region, time) in &update_times {
-        data.regions.entry(data.interner.get_or_intern(region)).or_default().lastupdate = *time as u64;
-    }
-
-    for nation in &nations {
-        let name = data.interner.get_or_intern(&nation.name);
-        let region = data.interner.get_or_intern(&nation.region);
-
-        data.nations.insert(name, NationData {
-            name,
-            region,
-            is_wa: nation.is_wa,
-            delegate: if nation.is_delegate { Some(region) } else { None },
-            lastupdate: *update_times.get(&nation.region).unwrap_or(&0) as u64
-        });
-
-        data.regions.entry(region).or_default().nations.push(name);
-
-        if nation.is_delegate {
-            data.regions.entry(region).or_default().delegate = Some(name);
-        }
-    }
-
-    data.wa_nations = nations.iter().filter_map(|v| {
-        if v.is_wa {
-            Some(data.interner.get_or_intern(&v.name))
-        } else { None }
-    }).collect();
-
-    for nation in nations {
-        if nation.is_wa {
-            let name = data.interner.get_or_intern(&nation.name);
-            let endorsements = nation.endorsements.iter().map(|v| data.interner.get_or_intern(v)).collect();
-            data.endorsements.insert(name, endorsements);
-        }
-    }
-
-    Ok(data)
-}
-
-// Save a list of nations that are expected to not have updated this major update from the current snapshot.
-// If after bootstrap, any of these nations are missing from the new snapshot, they will be reinserted.
-pub fn save_nonupdaters(
-    update_start: i64,
-    update_events: &Vec<Event>,
-    storage: &DataStorage
-) -> Vec<Nation> {
-    let mut nations: HashSet<String> = HashSet::new();
-
-    for event in update_events {
-        match event.category.as_str() {
-            "move" | "nfound" | "nrefound" => nations.insert(event.actor.clone().unwrap()),
-            _ => false,
-        };
-    }
-
-    let mut result = Vec::new();
-
-    for name in nations {
-        let Some((nation, symbol)) = storage.interner.get(&name).and_then(
-            |s| storage.nations.get(&s).map(|v| (v, s))
-        ) else { continue; };
-
-        if nation.lastupdate > (update_start as u64) {
-            continue;
-        }
-
-        let Some(region) = storage.interner.resolve(nation.region).map(|s| s.to_string()) else {
-            continue;
-        };
-
-        let is_delegate = Some(nation.region) == nation.delegate;
-
-        let endorsements = storage.endorsements.get(&symbol).map(|list| list.into_iter().filter_map(|v| {
-            storage.interner.resolve(*v).map(|s| s.to_string())
-        }).collect()).unwrap_or_default();
-
-        result.push(Nation { 
-            name: name.clone(), 
-            is_wa: nation.is_wa,
-            is_delegate, 
-            region, 
-            endorsements
-        });
-    }
-
-    result
 }
 
 async fn query_last_major_from_data_dump(
