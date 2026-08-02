@@ -54,8 +54,6 @@ async fn query_update_bootstrap_events(
         "SELECT event FROM akari_events WHERE category = 'rfeature' AND time >= $1 ORDER BY time ASC, event ASC LIMIT 1"
     ).bind(update_end).fetch_one(pool).await?;
 
-    let types = types.into_iter().filter(|&t| t != "rupdate").collect::<Vec<_>>();
-
     let result = sqlx::query(
         "SELECT * FROM akari_events WHERE category = ANY($1) AND event BETWEEN $2 AND $3 ORDER BY event ASC"
     ).bind(&types).bind(start).bind(end).fetch_all(pool).await?;
