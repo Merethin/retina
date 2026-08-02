@@ -1,12 +1,14 @@
 pub mod query;
+mod update;
 
 use std::{collections::{HashMap, HashSet}, error::Error, sync::Arc};
 use caramel::types::akari::Event;
 use log::info;
 use sqlx::PgPool;
+use string_interner::symbol::SymbolU32;
 use tokio::sync::{RwLock, broadcast};
 
-use crate::{actions::{execute_event, insert_nation_if_missing}, bootstrap::query::{fetch_data_dump_and_events, query_update_times}, data::{DataStorage, NationData}, events::{BootstrapEvent, SubscriptionEvent::{self, Bootstrap}}};
+use crate::{actions::{execute_event, insert_nation_if_missing}, bootstrap::{query::{fetch_data_dump_and_events, query_update_times}, update::invalidate_endorsements}, data::{DataStorage, NationData}, events::{BootstrapEvent, SubscriptionEvent::{self, Bootstrap}}};
 
 pub use query::Nation;
 
@@ -53,8 +55,12 @@ pub async fn run_bootstrap(
 
         info!("Bootstrapped initial state, filling in update & subsequent events");
 
+        let existing = save_extant_nation_names(&update_events, data.clone()).await;
+        info!("Logged {} extant nation names", existing.len());
         for event in update_events {
-            if should_execute_event(&event, data.clone()).await {
+            if event.category == "rupdate" {
+                invalidate_endorsements(&event, data.clone(), &existing).await;
+            } else if should_execute_event(&event, data.clone()).await {
                 execute_event(&event, data.clone()).await.ok();
             }
 
@@ -167,6 +173,38 @@ pub fn save_nonupdaters(
             region, 
             endorsements
         });
+    }
+
+    result
+}
+
+pub async fn save_extant_nation_names(
+    update_events: &Vec<Event>,
+    data: Arc<RwLock<DataStorage>>
+) -> HashMap<SymbolU32, i64> {
+    let mut nations: HashMap<String, i64> = HashMap::new();
+
+    for event in update_events {
+        match event.category.as_str() {
+            "move" | "nfound" | "nrefound" => {
+                let key = event.actor.as_ref().unwrap();
+                if !nations.contains_key(key) {
+                    nations.insert(key.clone(), event.event);
+                }
+            },
+            "ncte" => {
+                nations.remove(event.receptor.as_ref().unwrap());
+            }
+            _ => {},
+        }
+    }
+
+    let mut w = data.write().await;
+
+    let mut result: HashMap<SymbolU32, i64> = w.nations.keys().copied().map(|s| (s, 0)).collect();
+
+    for (name, id) in nations {
+        result.insert(w.interner.get_or_intern(name), id);
     }
 
     result

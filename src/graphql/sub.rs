@@ -110,6 +110,18 @@ impl Subscription {
         }
     }
 
+    async fn region_delete<'ctx>(&self, ctx: &Context<'ctx>) -> impl Stream<Item = String> {
+        let mut rx = ctx.data::<broadcast::Sender<SubscriptionEvent>>().unwrap().subscribe();
+
+        async_stream::stream! {
+            while let Ok(event) = rx.recv().await {
+                if let SubscriptionEvent::RegionDelete(event) = event {
+                    yield event.name;
+                }
+            }
+        }
+    }
+
     async fn wa_change<'ctx>(&self, ctx: &Context<'ctx>, nation: Option<String>) -> impl Stream<Item = Nation> {
         let mut rx = ctx.data::<broadcast::Sender<SubscriptionEvent>>().unwrap().subscribe();
 

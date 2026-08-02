@@ -47,6 +47,11 @@ pub struct RegionUpdateEvent {
 }
 
 #[derive(Clone)]
+pub struct RegionDeleteEvent {
+    pub name: String,
+}
+
+#[derive(Clone)]
 pub struct WAChangeEvent {
     pub name: String,
     pub nation: Nation,
@@ -67,6 +72,7 @@ pub enum SubscriptionEvent {
     NationDelete(NationDeleteEvent),
     NationMove(NationMoveEvent),
     RegionUpdate(RegionUpdateEvent),
+    RegionDelete(RegionDeleteEvent),
     WAChange(WAChangeEvent),
     Bootstrap(BootstrapEvent),
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use caramel::types::akari::Event;
 use tokio::sync::RwLock;
-use crate::{data::DataStorage, events::{NationChangeEvent, RegionChangeEvent, RegionUpdateEvent, SubscriptionEvent::{self, NationChange, RegionChange, RegionUpdate}}, graphql::{Nation, Region}};
+use crate::{data::DataStorage, events::{NationChangeEvent, RegionChangeEvent, RegionDeleteEvent, RegionUpdateEvent, SubscriptionEvent::{self, NationChange, RegionChange, RegionDelete, RegionUpdate}}, graphql::{Nation, Region}};
 
 pub async fn handle_update(
     data: Arc<RwLock<DataStorage>>,
@@ -31,6 +31,16 @@ pub async fn handle_update(
     }) else {
         return Ok(vec![]);
     };
+
+    if residents.is_empty() {
+        w.regions.remove(&region);
+        
+        events.push(RegionDelete(RegionDeleteEvent {
+            name: event.origin.clone().unwrap()
+        }));
+        
+        return Ok(events);
+    }
 
     let mut to_update = Vec::new();
     let mut valid_endorsers = Vec::new();
