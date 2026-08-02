@@ -16,8 +16,10 @@ async fn should_execute_event(
 ) -> bool {
     let r = data.read().await;
 
+    if event.category == "nfound" || event.category == "nrefound" { return true; }
+
     let Some(index) = r.interner.get(match event.category.as_str() {
-        "wadmit" | "wresign" | "wkick" | "move" | "nfound" | "nrefound" => event.actor.as_ref().unwrap(),
+        "wadmit" | "wresign" | "wkick" | "move" => event.actor.as_ref().unwrap(),
         // Endos are tracked by target so we return receptor
         _ => event.receptor.as_ref().unwrap()
     }) else {
@@ -25,7 +27,6 @@ async fn should_execute_event(
     };
 
     let Some(nation) = r.nations.get(&index) else {
-        if event.category == "nfound" || event.category == "nrefound" { return true; }
         return false;
     };
 
@@ -133,10 +134,9 @@ pub fn save_nonupdaters(
     let mut nations: HashSet<String> = HashSet::new();
 
     for event in update_events {
-        match event.category.as_str() {
-            "move" | "nfound" | "nrefound" => nations.insert(event.actor.clone().unwrap()),
-            _ => false,
-        };
+        if event.category == "move" {
+            nations.insert(event.actor.clone().unwrap());
+        }
     }
 
     let mut result = Vec::new();
