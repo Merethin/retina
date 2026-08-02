@@ -1,7 +1,7 @@
 mod actions;
 mod akari;
 mod bootstrap;
-mod command;
+mod worker;
 mod data;
 mod events;
 mod graphql;
@@ -14,7 +14,7 @@ use tokio::sync::{RwLock, broadcast};
 
 use caramel::log::setup_log;
 
-use crate::{server::run_server, command::{Command, start_command_worker}, data::DataStorage, akari::start_akari_worker};
+use crate::{server::run_server, worker::{Command, start_command_worker}, data::DataStorage, akari::start_akari_worker};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

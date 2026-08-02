@@ -3,7 +3,7 @@ use std::error::Error;
 use tokio::sync::mpsc::Sender;
 use lazy_static::lazy_static;
 
-use crate::command::Command;
+use crate::worker::Command;
 use caramel::akari::{create_consumer, consume};
 
 lazy_static! {

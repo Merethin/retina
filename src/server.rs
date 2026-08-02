@@ -5,7 +5,7 @@ use async_graphql_axum::{GraphQL, GraphQLSubscription};
 use axum::{Router, extract::State, http::StatusCode, response::{self, IntoResponse}, routing::{get, post}};
 use tokio::sync::{RwLock, broadcast, mpsc};
 
-use crate::{command::Command, data::DataStorage, events::SubscriptionEvent, graphql};
+use crate::{worker::Command, data::DataStorage, events::SubscriptionEvent, graphql};
 
 #[derive(Clone)]
 pub struct ApiState {
