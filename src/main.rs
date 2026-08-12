@@ -10,11 +10,11 @@ mod server;
 use log::error;
 use sqlx::PgPool;
 use std::{error::Error, process::exit, sync::Arc};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 
 use caramel::log::setup_log;
 
-use crate::{server::run_server, worker::{Command, start_command_worker}, data::DataStorage, akari::start_akari_worker};
+use crate::{akari::start_akari_worker, data::GlobalData, server::run_server, worker::{Command, start_command_worker}};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (broadcast, _rx) = broadcast::channel(100);
     drop(_rx);
 
-    let data = Arc::new(RwLock::new(DataStorage::new()));
+    let data = Arc::new(GlobalData::new());
 
     let sender = start_command_worker(pool, broadcast.clone(), data.clone()).await;
     start_akari_worker(sender.clone(), channel).await.ok();

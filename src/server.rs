@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQL, GraphQLSubscription};
 use axum::{Router, extract::State, http::StatusCode, response::{self, IntoResponse}, routing::{get, post}};
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::{worker::Command, data::DataStorage, events::SubscriptionEvent, graphql};
+use crate::{data::GlobalData, events::SubscriptionDetails, graphql, worker::Command};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -15,9 +15,9 @@ pub struct ApiState {
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 pub async fn run_server(
-    data: Arc<RwLock<DataStorage>>,
+    data: Arc<GlobalData>,
     sender: mpsc::Sender<Command>,
-    broadcast: broadcast::Sender<SubscriptionEvent>
+    broadcast: broadcast::Sender<SubscriptionDetails>
 ) -> Result<(), std::io::Error> {
     let schema = graphql::build_schema(data, broadcast);
 

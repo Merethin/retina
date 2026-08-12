@@ -1,24 +1,21 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use crate::{bootstrap::Nation, data::{DataStorage, NationData}};
+use crate::{bootstrap::Nation, data::{Interner, NationData, Snapshot}};
 
 pub async fn insert_nation_if_missing(
-    data: Arc<RwLock<DataStorage>>,
+    interner: &mut Interner,
+    snapshot: &mut Snapshot,
     nation: &Nation
 ) -> anyhow::Result<bool> {
-    let mut w = data.write().await;
+    let name = interner.get_or_intern(&nation.name);
 
-    let name = w.interner.get_or_intern(&nation.name);
-
-    if w.nations.contains_key(&name) {
+    if snapshot.nations.contains_key(&name) {
         return Ok(false);
     }
 
-    let region = w.interner.get_or_intern(&nation.region);
+    let region = interner.get_or_intern(&nation.region);
 
-    let endorsements = nation.endorsements.iter().map(|v| w.interner.get_or_intern(v)).collect();
+    let endorsements = nation.endorsements.iter().map(|v| interner.get_or_intern(v)).collect();
 
-    w.nations.insert(name, NationData {
+    snapshot.nations.insert(name, NationData {
         name,
         region,
         is_wa: nation.is_wa,
@@ -27,13 +24,13 @@ pub async fn insert_nation_if_missing(
         endorsements
     });
 
-    w.regions.entry(region).or_default().nations.insert(name);
+    snapshot.regions.entry(region).or_default().nations.insert(name);
 
     if nation.is_wa {
-        w.wa_nations.insert(name);
+        snapshot.wa_nations.insert(name);
 
         if nation.is_delegate {
-            w.regions.entry(region).or_default().delegate = Some(name);
+            snapshot.regions.entry(region).or_default().delegate = Some(name);
         }
     }
 

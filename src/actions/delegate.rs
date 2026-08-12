@@ -1,92 +1,69 @@
-use std::sync::Arc;
 use caramel::types::akari::Event;
-use tokio::sync::RwLock;
-use crate::{data::DataStorage, events::{DelegateChangeEvent, NationChangeEvent, RegionChangeEvent, SubscriptionEvent::{self, DelegateChange, NationChange, RegionChange}}, graphql::{Nation, Region}};
+use crate::{data::{Interner, Snapshot}, events::SubscriptionEvent::{self, NationChange, RegionChange}};
 
 pub async fn handle_new_delegate(
-    data: Arc<RwLock<DataStorage>>,
-    event: &Event
+    event: &Event,
+    interner: &mut Interner,
+    snapshot: &mut Snapshot,
 ) -> anyhow::Result<Vec<SubscriptionEvent>> {
-    let mut w = data.write().await;
-    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
-    let rkey = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+    let name = interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let rkey = interner.get_or_intern(event.origin.as_ref().unwrap());
 
-    let Some(nation) = w.nations.get_mut(&name) else {
+    let Some(nation) = snapshot.nations.get_mut(&name) else {
         return Err(anyhow::Error::msg("Not found"));
     };
 
     nation.delegate = Some(rkey);
-    let nation = Nation::from_nation_data(nation);
 
-    let region = w.regions.entry(rkey).or_default();
+    let region = snapshot.regions.entry(rkey).or_default();
     region.delegate = Some(name);
 
-    let region = Region::from_region_data(rkey, region);
-
-    Ok(vec![
-        DelegateChange(DelegateChangeEvent { name: event.origin.clone().unwrap(), region: region.clone() }),
-        RegionChange(RegionChangeEvent { name: event.origin.clone().unwrap(), region }),
-        NationChange(NationChangeEvent { name: event.receptor.clone().unwrap(), nation })
-    ])
+    Ok(vec![ RegionChange(rkey), NationChange(name) ])
 }
 
 pub async fn handle_replaced_delegate(
-    data: Arc<RwLock<DataStorage>>,
-    event: &Event
+    event: &Event,
+    interner: &mut Interner,
+    snapshot: &mut Snapshot,
 ) -> anyhow::Result<Vec<SubscriptionEvent>> {
-    let mut w = data.write().await;
-    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
-    let rkey = w.interner.get_or_intern(event.origin.as_ref().unwrap());
-    let old_del = w.interner.get_or_intern(event.data.get(0).unwrap());
+    let name = interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let rkey = interner.get_or_intern(event.origin.as_ref().unwrap());
+    let old_del = interner.get_or_intern(event.data.get(0).unwrap());
 
-    let Some(nation) = w.nations.get_mut(&name) else {
+    let Some(nation) = snapshot.nations.get_mut(&name) else {
         return Err(anyhow::Error::msg("Not found"));
     };
 
     nation.delegate = Some(rkey);
-    let nation = Nation::from_nation_data(nation);
 
-    let region = w.regions.entry(rkey).or_default();
+    let region = snapshot.regions.entry(rkey).or_default();
     region.delegate = Some(name);
 
-    let region = Region::from_region_data(rkey, region);
-
-    let Some(old_nation) = w.nations.get_mut(&old_del) else {
+    let Some(old_nation) = snapshot.nations.get_mut(&old_del) else {
         return Err(anyhow::Error::msg("Not found"))
     };
 
     old_nation.delegate = None;
 
-    Ok(vec![
-        DelegateChange(DelegateChangeEvent { name: event.origin.clone().unwrap(), region: region.clone() }),
-        RegionChange(RegionChangeEvent { name: event.origin.clone().unwrap(), region }),
-        NationChange(NationChangeEvent { name: event.receptor.clone().unwrap(), nation }),
-        NationChange(NationChangeEvent { name: event.data[0].clone(), nation: Nation::from_nation_data(old_nation) })
-    ])
+    Ok(vec![ RegionChange(rkey), NationChange(name), NationChange(old_del) ])
 }
 
 pub async fn handle_lost_delegate(
-    data: Arc<RwLock<DataStorage>>,
-    event: &Event
+    event: &Event,
+    interner: &mut Interner,
+    snapshot: &mut Snapshot,
 ) -> anyhow::Result<Vec<SubscriptionEvent>> {
-    let mut w = data.write().await;
-    let name = w.interner.get_or_intern(event.receptor.as_ref().unwrap());
-    let rkey = w.interner.get_or_intern(event.origin.as_ref().unwrap());
+    let name = interner.get_or_intern(event.receptor.as_ref().unwrap());
+    let rkey = interner.get_or_intern(event.origin.as_ref().unwrap());
 
-    let Some(nation) = w.nations.get_mut(&name) else {
+    let Some(nation) = snapshot.nations.get_mut(&name) else {
         return Err(anyhow::Error::msg("Not found"));
     };
 
     nation.delegate = None;
-    let nation = Nation::from_nation_data(nation);
 
-    let region = w.regions.entry(rkey).or_default();
+    let region = snapshot.regions.entry(rkey).or_default();
     region.delegate = Some(name);
-    let region = Region::from_region_data(rkey, region);
 
-    Ok(vec![
-        DelegateChange(DelegateChangeEvent { name: event.origin.clone().unwrap(), region: region.clone() }),
-        RegionChange(RegionChangeEvent { name: event.origin.clone().unwrap(), region }),
-        NationChange(NationChangeEvent { name: event.receptor.clone().unwrap(), nation })
-    ])
+    Ok(vec![ RegionChange(rkey), NationChange(name) ])
 }

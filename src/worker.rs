@@ -4,13 +4,13 @@ use std::sync::Arc;
 use caramel::types::akari::Event;
 use log::error;
 use sqlx::PgPool;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 use tokio::sync::mpsc::{Sender, Receiver, channel};
 
 use crate::bootstrap::run_bootstrap;
 use crate::actions::execute_event;
-use crate::data::DataStorage;
-use crate::events::SubscriptionEvent;
+use crate::data::GlobalData;
+use crate::events::{SubscriptionDetails, SubscriptionEvent};
 
 pub enum Command {
     Event(Event),
@@ -19,8 +19,8 @@ pub enum Command {
 
 pub async fn start_command_worker(
     pool: PgPool, 
-    broadcast: broadcast::Sender<SubscriptionEvent>,
-    data: Arc<RwLock<DataStorage>>,
+    broadcast: broadcast::Sender<SubscriptionDetails>,
+    data: Arc<GlobalData>,
 ) -> Sender<Command> {
     let (tx, rx) = channel(1000);
 
@@ -35,9 +35,9 @@ pub async fn start_command_worker(
 
 async fn worker(
     mut rx: Receiver<Command>,
-    broadcast: broadcast::Sender<SubscriptionEvent>,
+    broadcast: broadcast::Sender<SubscriptionDetails>,
     pool: PgPool,
-    data: Arc<RwLock<DataStorage>>,
+    data: Arc<GlobalData>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut last_event_id = 0i64;
 
@@ -53,8 +53,8 @@ async fn worker(
 
 async fn run_event(
     event: Event,
-    broadcast: &broadcast::Sender<SubscriptionEvent>,
-    data: Arc<RwLock<DataStorage>>,
+    broadcast: &broadcast::Sender<SubscriptionDetails>,
+    data: Arc<GlobalData>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Already processed through bootstrap
@@ -62,11 +62,25 @@ async fn run_event(
         return Ok(());
     }
 
-    let events = execute_event(&event, data.clone()).await.unwrap_or(vec![]);
+    let last_snapshot = data.last_snapshot.read().await.clone();
+    let mut snapshot = last_snapshot.modify(event.event);
+    let results = {
+        let mut interner = data.interner.write().await;
+        execute_event(&event, &mut interner, &mut snapshot).await.unwrap_or(vec![])
+    };
+    
     *last_event_id = event.event;
 
-    for event in events {
-        broadcast.send(event).ok();
+    let arc = Arc::new(snapshot);
+    *data.last_snapshot.write().await = arc.clone();
+
+    broadcast.send(SubscriptionDetails { 
+        event: SubscriptionEvent::SiteEvent(event), 
+        before: last_snapshot.clone(), after: arc.clone() 
+    }).ok();
+
+    for event in results {
+        broadcast.send(SubscriptionDetails { event, before: last_snapshot.clone(), after: arc.clone() }).ok();
     }
 
     Ok(())

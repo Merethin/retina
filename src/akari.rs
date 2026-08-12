@@ -21,7 +21,7 @@ pub async fn start_akari_worker(
     sender: Sender<Command>,
     channel: lapin::Channel
 ) -> Result<(), Box<dyn Error>> {
-    let mut consumer = create_consumer(&channel, "akari_events", Some(KEYS.to_vec())).await?;
+    let mut consumer = create_consumer(&channel, "akari_events", None).await?;
 
     tokio::spawn(async move {
         while let Some(event) = consume(&mut consumer).await {
