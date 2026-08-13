@@ -30,4 +30,4 @@ WORKDIR /
 
 COPY --from=build /usr/src/retina/target/release/retina /usr/local/bin/retina
 
-CMD ["retina"]
+CMD ["retina", "start-server"]

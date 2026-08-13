@@ -36,50 +36,65 @@ async fn should_execute_event(
     return event.time >= nation.lastupdate;
 }
 
+pub async fn run_preliminary_bootstrap(
+    pool: &PgPool,
+    nations: Vec<Nation>,
+    update_events: &Vec<Event>,
+    update_start: i64,
+    data: Arc<GlobalData>,
+    last_event_id: &mut i64,
+) -> Result<Snapshot, Box<dyn Error + Send + Sync>> {
+    let update_times = query_update_times(pool).await?;
+
+    let (saved, mut snapshot, existing) = {
+        let generation = data.generation_counter.fetch_add(1, Ordering::SeqCst);
+        let last_snapshot = data.last_snapshot.read().await.clone();
+        let mut interner = data.interner.write().await;
+
+        let saved = save_nonupdaters(update_start, &update_events, &interner, &last_snapshot);
+        let mut snapshot = Snapshot::start_generation(generation);
+        bootstrap_storage_from_initial_data(nations, update_times, &mut interner, &mut snapshot)?;
+        let existing = save_extant_nation_names(&update_events, &mut interner, &snapshot);
+
+        (saved, snapshot, existing)
+    };
+
+    info!("Bootstrapped initial state, filling in update events");
+
+    for event in update_events {
+        if event.category == "rupdate" {
+            let interner = data.interner.read().await;
+            invalidate_endorsements(&event, &interner, &mut snapshot, &existing).await;
+        } else if should_execute_event(&event, data.clone(), &snapshot).await {
+            let mut interner = data.interner.write().await;
+            execute_event(&event, &mut interner, &mut snapshot).await.ok();
+        }
+
+        *last_event_id = event.event;
+    }
+
+    info!("Filled in update events, moving on to nonupdaters");
+
+    for nation in saved {
+        let mut interner = data.interner.write().await;
+        insert_nation_if_missing(&mut interner, &mut snapshot, &nation).await?;
+    }
+
+    Ok(snapshot)
+}
+
 pub async fn run_bootstrap(
     pool: &PgPool,
     broadcast: &broadcast::Sender<SubscriptionDetails>,
     data: Arc<GlobalData>,
     last_event_id: &mut i64,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let last_snapshot = data.last_snapshot.read().await.clone();
+
     if let Ok((nations, update_events, subseq_events, update_start)) = fetch_data_dump_and_events(pool).await {
         info!("Bootstrapping state from data dump ({} nations) + {} update events + {} subsequent events", nations.len(), update_events.len(), subseq_events.len());
 
-        let update_times = query_update_times(pool).await?;
-
-        let (last_snapshot, saved, mut snapshot, existing) = {
-            let generation = data.generation_counter.fetch_add(1, Ordering::SeqCst);
-            let last_snapshot = data.last_snapshot.read().await.clone();
-            let mut interner = data.interner.write().await;
-
-            let saved = save_nonupdaters(update_start, &update_events, &interner, &last_snapshot);
-            let mut snapshot = Snapshot::start_generation(generation);
-            bootstrap_storage_from_initial_data(nations, update_times, &mut interner, &mut snapshot)?;
-            let existing = save_extant_nation_names(&update_events, &mut interner, &snapshot);
-
-            (last_snapshot, saved, snapshot, existing)
-        };
-
-        info!("Bootstrapped initial state, filling in update & subsequent events");
-
-        for event in update_events {
-            if event.category == "rupdate" {
-                let interner = data.interner.read().await;
-                invalidate_endorsements(&event, &interner, &mut snapshot, &existing).await;
-            } else if should_execute_event(&event, data.clone(), &snapshot).await {
-                let mut interner = data.interner.write().await;
-                execute_event(&event, &mut interner, &mut snapshot).await.ok();
-            }
-
-            *last_event_id = event.event;
-        }
-
-        info!("Filled in update events, moving on to nonupdaters");
-
-        for nation in saved {
-            let mut interner = data.interner.write().await;
-            insert_nation_if_missing(&mut interner, &mut snapshot, &nation).await?;
-        }
+        let mut snapshot = run_preliminary_bootstrap(pool, nations, &update_events, update_start, data.clone(), last_event_id).await?;
 
         info!("Filled in nonupdaters, moving on to subsequent events");
 

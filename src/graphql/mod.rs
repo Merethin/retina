@@ -7,7 +7,7 @@ use crate::{data::GlobalData, events::{SubscriptionDetails}, graphql::{query::Qu
 
 mod modified;
 mod nation;
-mod query;
+pub mod query;
 mod region;
 mod sub;
 mod world;
