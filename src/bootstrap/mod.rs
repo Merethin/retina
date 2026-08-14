@@ -7,8 +7,9 @@ use log::info;
 use sqlx::PgPool;
 use string_interner::symbol::SymbolU32;
 use tokio::sync::broadcast;
+use futures_util::StreamExt;
 
-use crate::{actions::{execute_event, insert_nation_if_missing}, bootstrap::{query::{fetch_data_dump_and_events, query_update_times}, update::invalidate_endorsements}, data::{GlobalData, Interner, NationData, Snapshot}, events::{SubscriptionDetails, SubscriptionEvent::Bootstrap}};
+use crate::{actions::{execute_event, insert_nation_if_missing}, akari::KEYS, bootstrap::{query::{query_data_dump_nation_state, query_last_major_from_data_dump, query_subsequent_bootstrap_events, query_update_bootstrap_events, query_update_times}, update::invalidate_endorsements}, data::{GlobalData, Interner, NationData, Snapshot}, events::{SubscriptionDetails, SubscriptionEvent::Bootstrap}};
 
 pub use query::Nation;
 
@@ -38,7 +39,6 @@ async fn should_execute_event(
 
 pub async fn run_preliminary_bootstrap(
     pool: &PgPool,
-    nations: Vec<Nation>,
     update_events: &Vec<Event>,
     update_start: i64,
     data: Arc<GlobalData>,
@@ -53,7 +53,7 @@ pub async fn run_preliminary_bootstrap(
 
         let saved = save_nonupdaters(update_start, &update_events, &interner, &last_snapshot);
         let mut snapshot = Snapshot::start_generation(generation);
-        bootstrap_storage_from_initial_data(nations, update_times, &mut interner, &mut snapshot)?;
+        bootstrap_storage_from_initial_data(pool, update_times, &mut interner, &mut snapshot).await?;
         let existing = save_extant_nation_names(&update_events, &mut interner, &snapshot);
 
         (saved, snapshot, existing)
@@ -91,14 +91,17 @@ pub async fn run_bootstrap(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let last_snapshot = data.last_snapshot.read().await.clone();
 
-    if let Ok((nations, update_events, subseq_events, update_start)) = fetch_data_dump_and_events(pool).await {
-        info!("Bootstrapping state from data dump ({} nations) + {} update events + {} subsequent events", nations.len(), update_events.len(), subseq_events.len());
+    if let Ok((update_start, update_end)) = query_last_major_from_data_dump(pool).await {
+        let update_events = query_update_bootstrap_events(pool, update_start, update_end, KEYS.to_vec()).await?;
 
-        let mut snapshot = run_preliminary_bootstrap(pool, nations, &update_events, update_start, data.clone(), last_event_id).await?;
+        info!("Bootstrapping state from data dump with {} update events", update_events.len());
+
+        let mut snapshot = run_preliminary_bootstrap(pool, &update_events, update_start, data.clone(), last_event_id).await?;
 
         info!("Filled in nonupdaters, moving on to subsequent events");
 
-        for event in subseq_events {
+        let mut subseq_events = query_subsequent_bootstrap_events(pool, update_end, KEYS.to_vec()).await?;
+        while let Some(Some(event)) = subseq_events.next().await {
             let mut interner = data.interner.write().await;
             execute_event(&event, &mut interner, &mut snapshot).await.ok();
             *last_event_id = event.event;
@@ -118,8 +121,8 @@ pub async fn run_bootstrap(
     Ok(())
 }
 
-pub fn bootstrap_storage_from_initial_data(
-    nations: Vec<Nation>,
+pub async fn bootstrap_storage_from_initial_data(
+    pool: &PgPool,
     update_times: HashMap<String, i64>,
     interner: &mut Interner,
     snapshot: &mut Snapshot,
@@ -128,7 +131,8 @@ pub fn bootstrap_storage_from_initial_data(
         snapshot.regions.entry(interner.get_or_intern(region)).or_default().lastupdate = *time as u64;
     }
 
-    for nation in &nations {
+    let mut nations = query_data_dump_nation_state(pool);
+    while let Some(Some(nation)) = nations.next().await {
         let name = interner.get_or_intern(&nation.name);
         let region = interner.get_or_intern(&nation.region);
         let endorsements = nation.endorsements.iter().map(|v| interner.get_or_intern(v)).collect();
@@ -149,9 +153,9 @@ pub fn bootstrap_storage_from_initial_data(
         }
     }
 
-    snapshot.wa_nations = nations.iter().filter_map(|v| {
+    snapshot.wa_nations = snapshot.nations.values().filter_map(|v| {
         if v.is_wa {
-            Some(interner.get_or_intern(&v.name))
+            Some(v.name)
         } else { None }
     }).collect();
 

@@ -5,8 +5,9 @@ use caramel::types::akari::Event;
 use log::{error, info, warn};
 use sqlx::PgPool;
 use csv::{Writer, WriterBuilder};
+use futures_util::StreamExt;
 
-use crate::{actions::execute_event, bootstrap::{query::fetch_data_dump_and_events, run_preliminary_bootstrap}, data::GlobalData};
+use crate::{actions::execute_event, akari::KEYS, bootstrap::{query::{query_last_major_from_data_dump, query_subsequent_bootstrap_events, query_update_bootstrap_events}, run_preliminary_bootstrap}, data::GlobalData};
 
 use crate::graphql::query::Query;
 
@@ -36,10 +37,12 @@ pub async fn run_replay(
 
     let prelim_start = Instant::now();
 
-    if let Ok((nations, update_events, subseq_events, update_start)) = fetch_data_dump_and_events(pool).await {
-        info!("Replaying state from data dump ({} nations) + {} preliminary events + {} subsequent events", nations.len(), update_events.len(), subseq_events.len());
+    if let Ok((update_start, update_end)) = query_last_major_from_data_dump(pool).await {
+        let update_events = query_update_bootstrap_events(pool, update_start, update_end, KEYS.to_vec()).await?;
 
-        let mut snapshot = run_preliminary_bootstrap(pool, nations, &update_events, update_start, data.clone(), &mut last_event_id).await?;
+        info!("Replaying state from data dump with {} preliminary events", update_events.len());
+
+        let mut snapshot = run_preliminary_bootstrap(pool, &update_events, update_start, data.clone(), &mut last_event_id).await?;
 
         info!("Preliminary bootstrap complete, final event: {} (took {}s)", last_event_id, prelim_start.elapsed().as_secs());
         snapshot.event = last_event_id;
@@ -75,7 +78,8 @@ pub async fn run_replay(
 
         let mut replay_counter = 1;
 
-        for event in &subseq_events {
+        let mut subseq_events = query_subsequent_bootstrap_events(pool, update_end, KEYS.to_vec()).await?;
+        while let Some(Some(event)) = subseq_events.next().await {
             let mut new_snapshot = snapshot.modify(event.event);
             let _ = {
                 let mut interner = data.interner.write().await;
@@ -87,7 +91,7 @@ pub async fn run_replay(
 
             let response = schema.execute(&query).await;
             if last_response.data != response.data {
-                write_replay_line(&mut writer, event, &response)?;
+                write_replay_line(&mut writer, &event, &response)?;
                 last_response = response;
                 last_event_id = event.event;
                 replay_counter += 1;
