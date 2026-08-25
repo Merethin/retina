@@ -61,7 +61,7 @@ async fn main_loop() -> Result<(), Box<dyn Error + Send + Sync>> {
     let channel = conn.create_channel().await?;
     let pool = connect_to_db().await;
 
-    let (broadcast, _rx) = broadcast::channel(100);
+    let (broadcast, _rx) = broadcast::channel(4096);
     drop(_rx);
 
     let data = Arc::new(GlobalData::new());
