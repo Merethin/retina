@@ -2,8 +2,9 @@ use std::{collections::HashSet, sync::Arc};
 
 use async_graphql::{Context, SimpleObject, Subscription};
 use futures_util::Stream;
+use log::warn;
 use string_interner::symbol::SymbolU32;
-use tokio::sync::broadcast;
+use tokio::sync::broadcast::{self, error::RecvError};
 
 use crate::{data::GlobalData, events::{SubscriptionDetails, SubscriptionEvent}, graphql::modified::{ModifiedNation, ModifiedRegion, ModifiedWorld}};
 
@@ -35,14 +36,24 @@ impl Subscription {
         };
 
         async_stream::stream! {
-            while let Ok(item) = rx.recv().await {
-                if let SubscriptionEvent::RegionChange(id) = item.event {
-                    if !filter.is_empty() && !filter.contains(&id) { continue; }
-                    yield ModifiedRegion {
-                        id: id,
-                        before: item.before.clone(),
-                        after: item.after.clone(),
-                    };
+            loop {
+                match rx.recv().await {
+                    Ok(item) => if let SubscriptionEvent::RegionChange(id) = item.event {
+                        if !filter.is_empty() && !filter.contains(&id) { continue; }
+                        yield ModifiedRegion {
+                            id: id,
+                            before: item.before.clone(),
+                            after: item.after.clone(),
+                        };
+                    },
+                    Err(err) => {
+                        match err {
+                            RecvError::Closed => warn!("region_change subscription channel closed"),
+                            RecvError::Lagged(n) => warn!("region_change subscription channel skipped {n} items"),
+                        }
+
+                        break;
+                    }
                 }
             }
         }
@@ -59,13 +70,23 @@ impl Subscription {
         };
 
         async_stream::stream! {
-            while let Ok(item) = rx.recv().await {
-                if let SubscriptionEvent::NationChange(id) = item.event {
-                    if !filter.is_empty() && !filter.contains(&id) { continue; }
-                    yield ModifiedNation {
-                        id: id,
-                        before: item.before.clone(),
-                        after: item.after.clone(),
+            loop {
+                match rx.recv().await {
+                    Ok(item) => if let SubscriptionEvent::NationChange(id) = item.event {
+                        if !filter.is_empty() && !filter.contains(&id) { continue; }
+                        yield ModifiedNation {
+                            id: id,
+                            before: item.before.clone(),
+                            after: item.after.clone(),
+                        }
+                    },
+                    Err(err) => {
+                        match err {
+                            RecvError::Closed => warn!("nation_change subscription channel closed"),
+                            RecvError::Lagged(n) => warn!("nation_change subscription channel skipped {n} items"),
+                        }
+
+                        break;
                     }
                 }
             }
@@ -76,50 +97,60 @@ impl Subscription {
         let mut rx = ctx.data::<broadcast::Sender<SubscriptionDetails>>().unwrap().subscribe();
 
         async_stream::stream! {
-            while let Ok(item) = rx.recv().await {
-                if let SubscriptionEvent::SiteEvent(event) = item.event {
-                    if !categories.is_empty() && !categories.contains(&event.category) { continue; }
+            loop {
+                match rx.recv().await {
+                    Ok(item) => if let SubscriptionEvent::SiteEvent(event) = item.event {
+                        if !categories.is_empty() && !categories.contains(&event.category) { continue; }
 
-                    let interner = ctx.data::<Arc<GlobalData>>().unwrap().interner.read().await;
+                        let interner = ctx.data::<Arc<GlobalData>>().unwrap().interner.read().await;
 
-                    yield SiteEvent {
-                        id: event.event,
-                        time: event.time,
-                        actor: event.actor.and_then(|n| interner.get(n).map(|id| {
-                            ModifiedNation {
-                                id: id,
-                                before: item.before.clone(),
-                                after: item.after.clone(),
-                            }
-                        })),
-                        receptor: event.receptor.and_then(|n| interner.get(n).map(|id| {
-                            ModifiedNation {
-                                id: id,
-                                before: item.before.clone(),
-                                after: item.after.clone(),
-                            }
-                        })),
-                        origin: event.origin.and_then(|r| interner.get(r).map(|id| {
-                            ModifiedRegion {
-                                id: id,
-                                before: item.before.clone(),
-                                after: item.after.clone(),
-                            }
-                        })),
-                        destination: event.destination.and_then(|r| interner.get(r).map(|id| {
-                            ModifiedRegion {
-                                id: id,
-                                before: item.before.clone(),
-                                after: item.after.clone(),
-                            }
-                        })),
-                        category: event.category,
-                        world: ModifiedWorld {
-                            before: item.before,
-                            after: item.after,
-                        },
-                        data: event.data
-                    };
+                        yield SiteEvent {
+                            id: event.event,
+                            time: event.time,
+                            actor: event.actor.and_then(|n| interner.get(n).map(|id| {
+                                ModifiedNation {
+                                    id: id,
+                                    before: item.before.clone(),
+                                    after: item.after.clone(),
+                                }
+                            })),
+                            receptor: event.receptor.and_then(|n| interner.get(n).map(|id| {
+                                ModifiedNation {
+                                    id: id,
+                                    before: item.before.clone(),
+                                    after: item.after.clone(),
+                                }
+                            })),
+                            origin: event.origin.and_then(|r| interner.get(r).map(|id| {
+                                ModifiedRegion {
+                                    id: id,
+                                    before: item.before.clone(),
+                                    after: item.after.clone(),
+                                }
+                            })),
+                            destination: event.destination.and_then(|r| interner.get(r).map(|id| {
+                                ModifiedRegion {
+                                    id: id,
+                                    before: item.before.clone(),
+                                    after: item.after.clone(),
+                                }
+                            })),
+                            category: event.category,
+                            world: ModifiedWorld {
+                                before: item.before,
+                                after: item.after,
+                            },
+                            data: event.data
+                        };
+                    },
+                    Err(err) => {
+                        match err {
+                            RecvError::Closed => warn!("site_event subscription channel closed"),
+                            RecvError::Lagged(n) => warn!("site_event subscription channel skipped {n} items"),
+                        }
+
+                        break;
+                    }
                 }
             }
         }
